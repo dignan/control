@@ -1,0 +1,8 @@
+[RB Plugin]
+Module=control
+IAge=1
+_Name=Control
+_Description=A plugin to allow remote control using other devices on the network
+Authors=Patrick Dignan <dignan.patrick at, gmail.com>
+Copyright=Copyright © 2010 Patrick Dignan
+Website=http://www.dignan.net

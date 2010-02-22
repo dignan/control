@@ -29,7 +29,8 @@ endif
 
 if ENABLE_VALA
 SUBDIRS +=						\
-	sample-vala
+	sample-vala         \
+  control 
 endif
 
 if USE_IPOD
