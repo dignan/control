@@ -4,7 +4,7 @@ using RhythmDB;
 
 class RBControlPluginServer {
 
-  const uint16 SERVER_PORT = 9000;
+  private const uint16 SERVER_PORT = 9000;
 
   /* Listens for incoming control sessions */
   public void listen() throws Error {

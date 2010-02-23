@@ -36,7 +36,7 @@ INCLUDES = 						                              \
 plugin_in_files = control.rb-plugin.in
 
 
-VALAFLAGS = --vapidir=$(top_srcdir)/bindings/vala --pkg=rhythmdb --pkg=rb
+VALAFLAGS = --vapidir=$(top_srcdir)/bindings/vala --pkg=rhythmdb --pkg=rb --pkg=avahi-gobject
 
 %.c %.h: %.vala
 	$(VALAC) -C $(VALAFLAGS) $^
