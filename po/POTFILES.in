@@ -66,6 +66,7 @@ plugins/context/tmpl/album-tmpl.html
 plugins/context/tmpl/artist-tmpl.html
 plugins/context/tmpl/loading.html
 plugins/context/tmpl/lyrics-tmpl.html
+[type: gettext/ini]plugins/control/control.rb-plugin.in
 [type: gettext/ini]plugins/daap/daap.rb-plugin.in
 [type: gettext/glade]plugins/daap/daap-prefs.ui
 plugins/daap/rb-daap-connection.c
