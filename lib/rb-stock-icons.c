@@ -48,14 +48,13 @@ typedef struct {
 } RBInlineIconData;
 
 const char RB_APP_ICON[] = "rhythmbox";
-const char RB_STOCK_TRAY_ICON_PLAYING[] = "rhythmbox";
-const char RB_STOCK_TRAY_ICON_NOT_PLAYING[] = "rhythmbox-notplaying";
+const char RB_STOCK_TRAY_ICON[] = "rhythmbox";
 const char RB_STOCK_SET_STAR[] = "rhythmbox-set-star";
 const char RB_STOCK_UNSET_STAR[] = "rhythmbox-unset-star";
 const char RB_STOCK_NO_STAR[] = "rhythmbox-no-star";
 const char RB_STOCK_PODCAST[] = "library-podcast";
 const char RB_STOCK_PODCAST_NEW[] = "podcast-new";
-const char RB_STOCK_BROWSER[] = "stock_music-library";
+const char RB_STOCK_BROWSER[] = "music-library";
 const char RB_STOCK_PLAYLIST[] = "playlist";
 const char RB_STOCK_PLAYLIST_NEW[] = "playlist-new";
 const char RB_STOCK_AUTO_PLAYLIST[] = "playlist-automatic";
@@ -70,6 +69,12 @@ static RBInlineIconData inline_icons[] = {
 	{ rhythmbox_no_star_inline, RB_STOCK_NO_STAR }
 };
 
+/**
+ * rb_stock_icons_init:
+ *
+ * Initializes the stock icons, adding the necessary filesystem
+ * locations to the GTK icon search path.  Must be called on startup.
+ */
 void
 rb_stock_icons_init (void)
 {
@@ -111,6 +116,13 @@ rb_stock_icons_init (void)
 	}
 }
 
+/**
+ * rb_stock_icons_shutdown:
+ *
+ * If anything was necessary to clean up the stock icons, this function
+ * would do it.  Doesn't do anything, but should be called on shutdown
+ * anyway.
+ */
 void
 rb_stock_icons_shutdown (void)
 {

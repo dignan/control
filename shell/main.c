@@ -32,7 +32,10 @@
 #ifdef ENABLE_PYTHON
 /* pyconfig.h usually defines _XOPEN_SOURCE */
 #undef _XOPEN_SOURCE
+#define NO_IMPORT_PYGOBJECT
+#define NO_IMPORT_PYGTK
 #include <pygobject.h>
+#include "rb-python-module.h"
 
 /* make sure it's defined somehow */
 #ifndef _XOPEN_SOURCE
@@ -89,7 +92,7 @@ static char **remaining_args    = NULL;
 
 static gboolean load_uri_args (const char **args, GFunc handler, gpointer user_data);
 static void dbus_load_uri (const char *filename, DBusGProxy *proxy);
-static void removable_media_scan_finished (RBShell *shell, gpointer data);
+static void database_load_complete (RBShell *shell, gpointer data);
 static void local_load_uri (const char *filename, RBShell *shell);
 
 static void main_shell_weak_ref_cb (gpointer data, GObject *objptr);
@@ -101,6 +104,7 @@ main (int argc, char **argv)
 	GError *error = NULL;
 	RBShell *rb_shell;
 	gboolean activated;
+	gboolean autostarted;
 	char *accel_map_file = NULL;
 	char *desktop_file_path;
 
@@ -121,6 +125,8 @@ main (int argc, char **argv)
 	g_thread_init (NULL);
 
 	rb_profile_start ("starting rhythmbox");
+
+	autostarted = (g_getenv ("DESKTOP_AUTOSTART_ID") != NULL);
 
 #ifdef USE_UNINSTALLED_DIRS
 	desktop_file_path = g_build_filename (SHARE_UNINSTALLED_BUILDDIR, "rhythmbox.desktop", NULL);
@@ -267,7 +273,7 @@ main (int argc, char **argv)
 
 		g_setenv ("PULSE_PROP_media.role", "music", TRUE);
 
-		rb_shell = rb_shell_new (no_registration, no_update, dry_run, rhythmdb_file, playlists_file);
+		rb_shell = rb_shell_new (no_registration, no_update, dry_run, autostarted, rhythmdb_file, playlists_file);
 		g_object_weak_ref (G_OBJECT (rb_shell), main_shell_weak_ref_cb, NULL);
 		if (!no_registration && session_bus != NULL) {
 			GObject *obj;
@@ -289,8 +295,8 @@ main (int argc, char **argv)
 			dbus_g_connection_register_g_object (session_bus, path, obj);
 
 			g_signal_connect (G_OBJECT (rb_shell),
-					  "removable_media_scan_finished",
-					  G_CALLBACK (removable_media_scan_finished),
+					  "database-load-complete",
+					  G_CALLBACK (database_load_complete),
 					  NULL);
 		}
 	} else if (!no_registration && session_bus != NULL) {
@@ -325,11 +331,15 @@ main (int argc, char **argv)
 
 		rb_profile_start ("mainloop");
 #ifdef ENABLE_PYTHON
-		pyg_begin_allow_threads;
-#endif
+		if (rb_python_init_successful ()) {
+			pyg_begin_allow_threads;
+			gtk_main ();
+			pyg_end_allow_threads;
+		} else {
+			gtk_main ();
+		}
+#else
 		gtk_main ();
-#ifdef ENABLE_PYTHON
-		pyg_end_allow_threads;
 #endif
 		rb_profile_end ("mainloop");
 
@@ -410,7 +420,7 @@ main_shell_weak_ref_cb (gpointer data, GObject *objptr)
 }
 
 static void
-removable_media_scan_finished (RBShell *shell, gpointer data)
+database_load_complete (RBShell *shell, gpointer data)
 {
 	load_uri_args ((const char **) remaining_args, (GFunc) local_load_uri, shell);
 }

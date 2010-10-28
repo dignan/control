@@ -147,6 +147,13 @@ rb_rating_class_init (RBRatingClass *klass)
 			      G_TYPE_NONE,
 			      1,
 			      G_TYPE_DOUBLE);
+	/**
+	 * RBRating::set-rating:
+	 * @rating: the #RBRating
+	 * @score: the new rating
+	 *
+	 * Action signal used to change the rating.
+	 */
 	rb_rating_signals[SET_RATING] =
 		g_signal_new ("set-rating",
 			      G_OBJECT_CLASS_TYPE (object_class),
@@ -157,6 +164,14 @@ rb_rating_class_init (RBRatingClass *klass)
 			      G_TYPE_NONE,
 			      1,
 			      G_TYPE_DOUBLE);
+	/**
+	 * RBRating::adjust-rating:
+	 * @rating: the #RBRating
+	 * @adjust: value to add to the rating
+	 *
+	 * Action signal used to make a relative adjustment to the
+	 * rating.
+	 */
 	rb_rating_signals[ADJUST_RATING] =
 		g_signal_new ("adjust-rating",
 			      G_OBJECT_CLASS_TYPE (object_class),
@@ -269,6 +284,8 @@ rb_rating_set_property (GObject *object,
 /**
  * rb_rating_new:
  *
+ * Creates a new rating widget
+ *
  * Return value: a new #RBRating widget.
  */
 RBRating *
@@ -292,8 +309,7 @@ rb_rating_realize (GtkWidget *widget)
 	GdkWindow *window;
 	int attributes_mask;
 
-	GTK_WIDGET_SET_FLAGS (widget, GTK_REALIZED);
-	gtk_widget_set_can_focus (widget, TRUE);
+	gtk_widget_set_realized (widget, TRUE);
 
 	gtk_widget_get_allocation (widget, &allocation);
 
@@ -312,6 +328,8 @@ rb_rating_realize (GtkWidget *widget)
 	window = gdk_window_new (gtk_widget_get_parent_window (widget), &attributes, attributes_mask);
 	gtk_widget_set_window (widget, window);
 	gdk_window_set_user_data (window, widget);
+
+	gtk_widget_set_can_focus (widget, TRUE);
 
 	style = gtk_style_attach (gtk_widget_get_style (widget), window);
 	gtk_widget_set_style (widget, style);

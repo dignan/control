@@ -297,19 +297,13 @@ rb_cell_renderer_pixbuf_render (GtkCellRenderer    *cell,
   pix_rect.width -= xpad * 2;
   pix_rect.height -= ypad * 2;
 
-  if (gdk_rectangle_intersect (cell_area, &pix_rect, &draw_rect))
-    gdk_draw_pixbuf (window,
-		     NULL,
-		     cellpixbuf->pixbuf,
-		     /* pixbuf 0, 0 is at pix_rect.x, pix_rect.y */
-		     draw_rect.x - pix_rect.x,
-		     draw_rect.y - pix_rect.y,
-		     draw_rect.x,
-		     draw_rect.y,
-		     draw_rect.width,
-		     draw_rect.height,
-		     GDK_RGB_DITHER_NORMAL,
-		     0, 0);
+  if (gdk_rectangle_intersect (cell_area, &pix_rect, &draw_rect)) {
+    cairo_t *cr = gdk_cairo_create (window);
+    gdk_cairo_set_source_pixbuf (cr, cellpixbuf->pixbuf, pix_rect.x, pix_rect.y);
+    gdk_cairo_rectangle (cr, &draw_rect);
+    cairo_paint (cr);
+    cairo_destroy (cr);
+  }
 }
 
 static gboolean
@@ -321,21 +315,32 @@ rb_cell_renderer_pixbuf_activate (GtkCellRenderer *cell,
 				  GdkRectangle *cell_area,
 				  GtkCellRendererState flags)
 {
-	int mouse_x, mouse_y, icon_width;
-	RBCellRendererPixbuf *cellpixbuf = (RBCellRendererPixbuf *) cell;
+  int mouse_x, mouse_y;
+  RBCellRendererPixbuf *cellpixbuf = (RBCellRendererPixbuf *) cell;
 
-	g_return_val_if_fail (RB_IS_CELL_RENDERER_PIXBUF (cellpixbuf), FALSE);
+  g_return_val_if_fail (RB_IS_CELL_RENDERER_PIXBUF (cellpixbuf), FALSE);
 
-	gtk_icon_size_lookup (GTK_ICON_SIZE_MENU, &icon_width, NULL);
-	gtk_widget_get_pointer (widget, &mouse_x, &mouse_y);
-	gtk_tree_view_convert_widget_to_bin_window_coords (GTK_TREE_VIEW (widget),
-							   mouse_x, mouse_y,
-							   &mouse_x, &mouse_y);
+  if (event == NULL) {
+    return FALSE;
+  }
+  /* only handle mouse events */
+  switch (event->type) {
+    case GDK_BUTTON_PRESS:
+    case GDK_BUTTON_RELEASE:
+      break;
+    default:
+      return FALSE;
+  }
 
-	/* ensure the user clicks within the good cell */
-	if (mouse_x - cell_area->x >= 0
-	    && mouse_x - cell_area->x <= cell_area->width) {
-		g_signal_emit (G_OBJECT (cellpixbuf), rb_cell_renderer_pixbuf_signals [PIXBUF_CLICKED], 0, path);
-	}
-	return TRUE;
+  gtk_widget_get_pointer (widget, &mouse_x, &mouse_y);
+  gtk_tree_view_convert_widget_to_bin_window_coords (GTK_TREE_VIEW (widget),
+						     mouse_x, mouse_y,
+						     &mouse_x, &mouse_y);
+
+  /* ensure the user clicks within the good cell */
+  if (mouse_x - cell_area->x >= 0
+      && mouse_x - cell_area->x <= cell_area->width) {
+    g_signal_emit (G_OBJECT (cellpixbuf), rb_cell_renderer_pixbuf_signals [PIXBUF_CLICKED], 0, path);
+  }
+  return TRUE;
 }

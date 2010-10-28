@@ -4,39 +4,41 @@ plugindir = $(PLUGINDIR)/daap
 plugin_LTLIBRARIES = libdaap.la
 
 libdaap_la_SOURCES = \
-	rb-daap-plugin.c			\
-	rb-daap-plugin.h			\
-	rb-daap-source.c			\
-	rb-daap-source.h			\
-	rb-daap-sharing.c			\
-	rb-daap-sharing.h			\
-	rb-daap-share.c				\
-	rb-daap-share.h				\
-	rb-daap-structure.c			\
-	rb-daap-structure.h 			\
-	rb-daap-mdns-publisher.h		\
-	rb-daap-mdns-browser.h			\
-	rb-daap-connection.c			\
-	rb-daap-connection.h			\
-	rb-daap-hash.c				\
-	rb-daap-hash.h				\
-	rb-daap-src.c				\
-	rb-daap-src.h				\
-	rb-daap-dialog.c			\
-	rb-daap-dialog.h			\
-	rb-daap-mdns-avahi.c			\
-	rb-daap-mdns-avahi.h			\
-	rb-daap-mdns-publisher-avahi.c		\
-	rb-daap-mdns-browser-avahi.c		\
+	rb-daap-container-record.c		  \
+	rb-daap-container-record.h		  \
+	rb-daap-plugin.c			  \
+	rb-daap-plugin.h			  \
+	rb-daap-record.c			  \
+	rb-daap-record.h			  \
+	rb-daap-record-factory.c		  \
+	rb-daap-record-factory.h		  \
+	rb-daap-sharing.c			  \
+	rb-daap-sharing.h			  \
+	rb-daap-source.c			  \
+	rb-daap-source.h			  \
+	rb-daap-src.c				  \
+	rb-daap-src.h				  \
+	rb-dmap-container-db-adapter.c		  \
+	rb-dmap-container-db-adapter.h		  \
+	rb-daap-dialog.c			  \
+	rb-daap-dialog.h			  \
+	rb-dacp-source.c			  \
+	rb-dacp-source.h			  \
+	rb-dacp-player.c			  \
+	rb-dacp-player.h			  \
+	rb-rhythmdb-dmap-db-adapter.c             \
+	rb-rhythmdb-dmap-db-adapter.h             \
+	rb-rhythmdb-query-model-dmap-db-adapter.c \
+	rb-rhythmdb-query-model-dmap-db-adapter.h \
 	$(NULL)
 
 libdaap_la_LDFLAGS = $(PLUGIN_LIBTOOL_FLAGS)
 libdaap_la_LIBTOOLFLAGS = --tag=disable-static
 libdaap_la_LIBADD = 					\
 	$(top_builddir)/shell/librhythmbox-core.la	\
+	$(DMAPSHARING_LIBS)                             \
 	$(DBUS_LIBS)					\
-	$(RHYTHMBOX_LIBS)				\
-	$(MDNS_LIBS)
+	$(RHYTHMBOX_LIBS)
 
 INCLUDES = 						\
         -DGNOMELOCALEDIR=\""$(datadir)/locale"\"        \
@@ -59,7 +61,7 @@ INCLUDES = 						\
 	-DPIXMAP_DIR=\""$(datadir)/pixmaps"\"		\
 	-DSHARE_DIR=\"$(pkgdatadir)\"                   \
 	-DDATADIR=\""$(datadir)"\"			\
-	$(MDNS_CFLAGS)					\
+	$(DMAPSHARING_CFLAGS)				\
 	$(RHYTHMBOX_CFLAGS)				\
 	$(DBUS_CFLAGS)					\
 	-D_XOPEN_SOURCE -D_BSD_SOURCE
@@ -85,10 +87,12 @@ BUILT_SOURCES =							\
 
 plugin_DATA = 			\
 	$(BUILT_SOURCES)	\
+	$(top_srcdir)/plugins/daap/remote-icon.png		\
 	$(NULL)
 
 EXTRA_DIST = 			\
-	$(gtkbuilder_DATA)		\
+	$(gtkbuilder_DATA)	\
+	$(top_srcdir)/plugins/daap/remote-icon.png		\
 	$(uixml_DATA)		\
 	$(plugin_in_files)	\
 	$(NULL)

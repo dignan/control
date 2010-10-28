@@ -27,6 +27,21 @@
  *
  */
 
+/**
+ * SECTION:rb-static-playlist-source
+ * @short_description: Manually defined playlist class
+ *
+ * Static playlists are not defined by a query, but instead by manually selected
+ * and ordered tracks.
+ *
+ * This class is used for static playlists built from the user's library, and is
+ * also a base class for the play queue and for playlists on devices and network
+ * shares.
+ *
+ * It has some ability to track locations that are not yet present in the database
+ * and to add them to the playlist once they are added.
+ */
+
 #include "config.h"
 
 #include <string.h>
@@ -58,7 +73,7 @@ static void rb_static_playlist_source_get_property (GObject *object,
 
 /* source methods */
 static GList * impl_cut (RBSource *source);
-static void impl_paste (RBSource *asource, GList *entries);
+static RBTrackTransferBatch *impl_paste (RBSource *asource, GList *entries);
 static void impl_delete (RBSource *source);
 static void impl_search (RBSource *asource, RBSourceSearch *search, const char *cur_text, const char *new_text);
 static void impl_browser_toggled (RBSource *source, gboolean enabled);
@@ -263,7 +278,7 @@ rb_static_playlist_source_constructed (GObject *object)
 	RBPlaylistSource *psource;
 	RBEntryView *songs;
 	RBShell *shell;
-	RhythmDBEntryType entry_type;
+	RhythmDBEntryType *entry_type;
 
 	RB_CHAIN_GOBJECT_METHOD (rb_static_playlist_source_parent_class, constructed, object);
 
@@ -305,7 +320,10 @@ rb_static_playlist_source_constructed (GObject *object)
 	g_object_get (source, "entry-type", &entry_type, NULL);
 	priv->browser = rb_library_browser_new (rb_playlist_source_get_db (RB_PLAYLIST_SOURCE (source)),
 						entry_type);
-	g_boxed_free (RHYTHMDB_TYPE_ENTRY_TYPE, entry_type);
+	if (entry_type != NULL) {
+		g_object_unref (entry_type);
+	}
+
 	gtk_paned_pack1 (GTK_PANED (priv->paned), GTK_WIDGET (priv->browser), TRUE, FALSE);
 	g_signal_connect_object (priv->browser, "notify::output-model",
 				 G_CALLBACK (rb_static_playlist_source_browser_changed_cb),
@@ -336,8 +354,20 @@ rb_static_playlist_source_constructed (GObject *object)
 	gtk_widget_show_all (GTK_WIDGET (source));
 }
 
+/**
+ * rb_static_playlist_source_new:
+ * @shell: the #RBShell
+ * @name: the playlist name
+ * @sorting_name: the sorting name for the playlist (GConf key friendly)
+ * @local: if %TRUE, the playlist is local to the library
+ * @entry_type: type of database entries that can be added to the playlist.
+ *
+ * Creates a new static playlist source.
+ *
+ * Return value: new playlist.
+ */
 RBSource *
-rb_static_playlist_source_new (RBShell *shell, const char *name, const char *sorting_name, gboolean local, RhythmDBEntryType entry_type)
+rb_static_playlist_source_new (RBShell *shell, const char *name, const char *sorting_name, gboolean local, RhythmDBEntryType *entry_type)
 {
 	if (name == NULL)
 		name = "";
@@ -389,6 +419,13 @@ rb_static_playlist_source_get_property (GObject *object,
 	}
 }
 
+/**
+ * rb_static_playlist_source_load_from_xml:
+ * @source: an #RBStaticPlaylistSource
+ * @node: XML node to load from
+ *
+ * Loads the playlist contents from the specified XML document node.
+ */
 void
 rb_static_playlist_source_load_from_xml (RBStaticPlaylistSource *source, xmlNodePtr node)
 {
@@ -410,6 +447,15 @@ rb_static_playlist_source_load_from_xml (RBStaticPlaylistSource *source, xmlNode
 	}
 }
 
+/**
+ * rb_static_playlist_source_new_from_xml:
+ * @shell: the #RBShell
+ * @node: XML node containing playlist entries
+ *
+ * Constructs a new playlist from the given XML document node.
+ *
+ * Return value: playlist read from XML
+ */
 RBSource *
 rb_static_playlist_source_new_from_xml (RBShell *shell, xmlNodePtr node)
 {
@@ -439,13 +485,15 @@ impl_cut (RBSource *asource)
 	return sel;
 }
 
-static void
+static RBTrackTransferBatch *
 impl_paste (RBSource *asource, GList *entries)
 {
 	RBStaticPlaylistSource *source = RB_STATIC_PLAYLIST_SOURCE (asource);
 
 	for (; entries; entries = g_list_next (entries))
 		rb_static_playlist_source_add_entry (source, entries->data, -1);
+
+	return NULL;
 }
 
 static void
@@ -745,6 +793,16 @@ _add_location_cb (GFile *file,
 	return TRUE;	
 }
 
+/**
+ * rb_static_playlist_source_add_location:
+ * @source: an #RBStaticPlaylistSource
+ * @location: location (URI) to add to the playlist
+ * @index: position at which to add the location (-1 to add at the end)
+ *
+ * If the location matches an entry in the database, the entry is added
+ * to the playlist.  Otherwise, if it identifies a directory, the contents
+ * of that directory are added.
+ */
 void
 rb_static_playlist_source_add_location (RBStaticPlaylistSource *source,
 					const char *location,
@@ -767,6 +825,14 @@ rb_static_playlist_source_add_location (RBStaticPlaylistSource *source,
 
 }
 
+/**
+ * rb_static_playlist_source_add_locations:
+ * @source: an #RBStaticPlaylistSource
+ * @locations: a #GList of strings to add
+ *
+ * Adds the locations specified in @locations to the playlist.
+ * See @rb_static_playlist_source_add_location for details.
+ */
 void
 rb_static_playlist_source_add_locations (RBStaticPlaylistSource *source,
 					 GList *locations)
@@ -779,6 +845,15 @@ rb_static_playlist_source_add_locations (RBStaticPlaylistSource *source,
 	}
 }
 
+/**
+ * rb_static_playlist_source_remove_location:
+ * @source: an #RBStaticPlaylistSource
+ * @location: location to remove
+ *
+ * Removes the specified location from the playlist.  This affects both
+ * the location map and the query model, whether an entry exists for the
+ * location or not.
+ */
 void
 rb_static_playlist_source_remove_location (RBStaticPlaylistSource *source,
 					   const char *location)
@@ -801,6 +876,14 @@ rb_static_playlist_source_remove_location (RBStaticPlaylistSource *source,
 	}
 }
 
+/**
+ * rb_static_playlist_source_add_entry:
+ * @source: an #RBStaticPlaylistSource
+ * @entry: entry to add to the playlist
+ * @index: position at which to add it (-1 to add at the end)
+ *
+ * Adds the specified entry to the playlist.
+ */
 void
 rb_static_playlist_source_add_entry (RBStaticPlaylistSource *source,
 				     RhythmDBEntry *entry,
@@ -812,6 +895,13 @@ rb_static_playlist_source_add_entry (RBStaticPlaylistSource *source,
 	rb_static_playlist_source_add_location_internal (source, location, index);
 }
 
+/**
+ * rb_static_playlist_source_remove_entry:
+ * @source: an #RBStaticPlaylistSource
+ * @entry: the entry to remove
+ *
+ * Removes the specified entry from the playlist.
+ */
 void
 rb_static_playlist_source_remove_entry (RBStaticPlaylistSource *source,
 					RhythmDBEntry *entry)
@@ -822,6 +912,14 @@ rb_static_playlist_source_remove_entry (RBStaticPlaylistSource *source,
 	rb_static_playlist_source_remove_location (source, location);
 }
 
+/**
+ * rb_static_playlist_source_move_entry:
+ * @source: an #RBStaticPlaylistSource
+ * @entry: the entry to move
+ * @index: new location for the entry
+ *
+ * Moves an entry within the playlist.
+ */
 void
 rb_static_playlist_source_move_entry (RBStaticPlaylistSource *source,
 				      RhythmDBEntry *entry,
@@ -909,4 +1007,3 @@ impl_want_uri (RBSource *source, const char *uri)
 
 	return 0;
 }
-

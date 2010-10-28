@@ -34,9 +34,11 @@
 #include <stdarg.h>
 #include <libxml/tree.h>
 
-#include "rb-refstring.h"
-#include "rb-string-value-map.h"
-#include "rhythmdb-query-results.h"
+#include <rhythmdb/rb-refstring.h>
+#include <lib/rb-string-value-map.h>
+#include <rhythmdb/rhythmdb-entry.h>
+#include <rhythmdb/rhythmdb-entry-type.h>
+#include <rhythmdb/rhythmdb-query-results.h>
 
 G_BEGIN_DECLS
 
@@ -50,75 +52,12 @@ typedef struct _RhythmDBClass RhythmDBClass;
 #define RHYTHMDB_IS_CLASS(k)  (G_TYPE_CHECK_CLASS_TYPE ((k), RHYTHMDB_TYPE))
 #define RHYTHMDB_GET_CLASS(o) (G_TYPE_INSTANCE_GET_CLASS ((o), RHYTHMDB_TYPE, RhythmDBClass))
 
-struct RhythmDBEntry_;
-typedef struct RhythmDBEntry_ RhythmDBEntry;
-GType rhythmdb_entry_get_type (void);
-
-#define RHYTHMDB_TYPE_ENTRY      (rhythmdb_entry_get_type ())
-#define RHYTHMDB_ENTRY(o)           (G_TYPE_CHECK_INSTANCE_CAST ((o), RHYTHMDB_TYPE_ENTRY, RhythmDBEntry))
-
-typedef void (*RhythmDBEntryActionFunc) (RhythmDBEntry *entry, gpointer data);
-typedef char* (*RhythmDBEntryStringFunc) (RhythmDBEntry *entry, gpointer data);
-typedef gboolean (*RhythmDBEntryCanSyncFunc) (RhythmDB *db, RhythmDBEntry *entry, gpointer data);
-typedef void (*RhythmDBEntrySyncFunc) (RhythmDB *db, RhythmDBEntry *entry, GError **error, gpointer data);
-
-GType rhythmdb_entry_category_get_type (void);
-#define RHYTHMDB_TYPE_ENTRY_CATEGORY (rhythmdb_entry_category_get_type ())
-typedef enum {
-	RHYTHMDB_ENTRY_NORMAL,		/* anything that doesn't match the other categories */
-	RHYTHMDB_ENTRY_STREAM,		/* endless streams (eg shoutcast, last.fm) */
-	RHYTHMDB_ENTRY_CONTAINER,	/* things that point to other entries (eg podcast feeds) */
-	RHYTHMDB_ENTRY_VIRTUAL		/* import errors, ignored files */
-} RhythmDBEntryCategory;
-
-typedef struct {
-	char 				*name;
-
-	guint				entry_type_data_size;
-	gboolean			save_to_disk;
-	gboolean			has_playlists;
-	RhythmDBEntryCategory		category;
-
-	/* virtual functions here */
-	RhythmDBEntryActionFunc		post_entry_create;
-	gpointer			post_entry_create_data;
-	GDestroyNotify			post_entry_create_destroy;
-
-	RhythmDBEntryActionFunc		pre_entry_destroy;
-	gpointer			pre_entry_destroy_data;
-	GDestroyNotify			pre_entry_destroy_destroy;
-
-	RhythmDBEntryStringFunc		get_playback_uri;
-	gpointer			get_playback_uri_data;
-	GDestroyNotify			get_playback_uri_destroy;
-
-	RhythmDBEntryCanSyncFunc	can_sync_metadata;
-	gpointer			can_sync_metadata_data;
-	GDestroyNotify			can_sync_metadata_destroy;
-
-	RhythmDBEntrySyncFunc		sync_metadata;
-	gpointer			sync_metadata_data;
-	GDestroyNotify			sync_metadata_destroy;
-} RhythmDBEntryType_;
-typedef RhythmDBEntryType_ *RhythmDBEntryType;
-
-GType rhythmdb_entry_type_get_type (void);
-#define RHYTHMDB_TYPE_ENTRY_TYPE	(rhythmdb_entry_type_get_type ())
-#define RHYTHMDB_ENTRY_TYPE(o)		(G_TYPE_CHECK_INSTANCE_CAST ((o), RHYTHMDB_TYPE_ENTRY_TYPE, RhythmDBEntryType_))
-#define RHYTHMDB_IS_ENTRY_TYPE(o)	(G_TYPE_CHECK_INSTANCE_TYPE ((o), RHYTHMDB_TYPE_ENTRY_TYPE))
 
 typedef GPtrArray RhythmDBQuery;
 GType rhythmdb_query_get_type (void);
 #define RHYTHMDB_TYPE_QUERY	(rhythmdb_query_get_type ())
 #define RHYTHMDB_QUERY(o)           (G_TYPE_CHECK_INSTANCE_CAST ((o), RHYTHMDB_TYPE_QUERY, RhythmDBQuery))
 #define RHYTHMDB_IS_QUERY(o)        (G_TYPE_CHECK_INSTANCE_TYPE ((o), RHYTHMDB_TYPE_QUERY))
-
-#define RHYTHMDB_ENTRY_TYPE_SONG (rhythmdb_entry_song_get_type ())
-#define RHYTHMDB_ENTRY_TYPE_PODCAST_POST (rhythmdb_entry_podcast_post_get_type ())
-#define RHYTHMDB_ENTRY_TYPE_PODCAST_FEED (rhythmdb_entry_podcast_feed_get_type ())
-#define RHYTHMDB_ENTRY_TYPE_IMPORT_ERROR (rhythmdb_entry_import_error_get_type ())
-#define RHYTHMDB_ENTRY_TYPE_IGNORE (rhythmdb_entry_ignore_get_type ())
-#define RHYTHMDB_ENTRY_TYPE_INVALID (GINT_TO_POINTER (-1))
 
 typedef enum
 {
@@ -128,6 +67,7 @@ typedef enum
 
 	/* general */
 	RHYTHMDB_QUERY_PROP_EQUALS,
+	RHYTHMDB_QUERY_PROP_NOT_EQUAL,
 
 	/* string */
 	RHYTHMDB_QUERY_PROP_LIKE,
@@ -143,6 +83,7 @@ typedef enum
 	RHYTHMDB_QUERY_PROP_CURRENT_TIME_WITHIN,
 	RHYTHMDB_QUERY_PROP_CURRENT_TIME_NOT_WITHIN,
 	RHYTHMDB_QUERY_PROP_YEAR_EQUALS,
+	RHYTHMDB_QUERY_PROP_YEAR_NOT_EQUAL,
 	RHYTHMDB_QUERY_PROP_YEAR_GREATER,
 	RHYTHMDB_QUERY_PROP_YEAR_LESS,
 } RhythmDBQueryType;
@@ -170,10 +111,10 @@ typedef enum
 	RHYTHMDB_PROP_LAST_PLAYED,
 	RHYTHMDB_PROP_BITRATE,
 	RHYTHMDB_PROP_DATE,
-	RHYTHMDB_PROP_TRACK_GAIN,
-	RHYTHMDB_PROP_TRACK_PEAK,
-	RHYTHMDB_PROP_ALBUM_GAIN,
-	RHYTHMDB_PROP_ALBUM_PEAK,
+	RHYTHMDB_PROP_TRACK_GAIN,			/* obsolete */
+	RHYTHMDB_PROP_TRACK_PEAK,			/* obsolete */
+	RHYTHMDB_PROP_ALBUM_GAIN,			/* obsolete */
+	RHYTHMDB_PROP_ALBUM_PEAK,			/* obsolete */
 	RHYTHMDB_PROP_MIMETYPE,
 	RHYTHMDB_PROP_TITLE_SORT_KEY,
 	RHYTHMDB_PROP_GENRE_SORT_KEY,
@@ -211,6 +152,22 @@ typedef enum
 	RHYTHMDB_PROP_ARTIST_SORTNAME,
 	RHYTHMDB_PROP_ALBUM_SORTNAME,
 
+	RHYTHMDB_PROP_ARTIST_SORTNAME_SORT_KEY,
+	RHYTHMDB_PROP_ARTIST_SORTNAME_FOLDED,
+	RHYTHMDB_PROP_ALBUM_SORTNAME_SORT_KEY,
+	RHYTHMDB_PROP_ALBUM_SORTNAME_FOLDED,
+
+	RHYTHMDB_PROP_COMMENT,
+
+	RHYTHMDB_PROP_ALBUM_ARTIST,
+	RHYTHMDB_PROP_ALBUM_ARTIST_SORT_KEY,
+	RHYTHMDB_PROP_ALBUM_ARTIST_FOLDED,
+	RHYTHMDB_PROP_ALBUM_ARTIST_SORTNAME,
+	RHYTHMDB_PROP_ALBUM_ARTIST_SORTNAME_SORT_KEY,
+	RHYTHMDB_PROP_ALBUM_ARTIST_SORTNAME_FOLDED,
+
+	RHYTHMDB_PROP_BPM,
+
 	RHYTHMDB_NUM_PROPERTIES
 } RhythmDBPropType;
 
@@ -227,8 +184,6 @@ enum {
 #define RHYTHMDB_PROP_STREAM_SONG_ALBUM		"rb:stream-song-album"
 #define RHYTHMDB_PROP_COVER_ART			"rb:coverArt"
 #define RHYTHMDB_PROP_COVER_ART_URI		"rb:coverArt-uri"
-#define RHYTHMDB_PROP_ALBUM_ARTIST		"rb:album-artist"
-#define RHYTHMDB_PROP_ALBUM_ARTIST_SORTNAME	"rb:album-artist-sortname"
 
 GType rhythmdb_query_type_get_type (void);
 GType rhythmdb_prop_type_get_type (void);
@@ -243,6 +198,9 @@ typedef struct {
 	RhythmDBQuery *subquery;
 } RhythmDBQueryData;
 
+GType rhythmdb_entry_change_get_type (void);
+#define RHYTHMDB_TYPE_ENTRY_CHANGE (rhythmdb_entry_change_get_type ())
+
 typedef struct {
 	RhythmDBPropType prop;
 	GValue old;
@@ -256,9 +214,9 @@ gboolean rhythmdb_entry_get_boolean	(RhythmDBEntry *entry, RhythmDBPropType prop
 guint64 rhythmdb_entry_get_uint64	(RhythmDBEntry *entry, RhythmDBPropType propid);
 gulong rhythmdb_entry_get_ulong		(RhythmDBEntry *entry, RhythmDBPropType propid);
 double rhythmdb_entry_get_double	(RhythmDBEntry *entry, RhythmDBPropType propid);
-gpointer rhythmdb_entry_get_pointer     (RhythmDBEntry *entry, RhythmDBPropType propid);
+GObject *rhythmdb_entry_get_object     (RhythmDBEntry *entry, RhythmDBPropType propid);
 
-RhythmDBEntryType rhythmdb_entry_get_entry_type (RhythmDBEntry *entry);
+RhythmDBEntryType *rhythmdb_entry_get_entry_type (RhythmDBEntry *entry);
 
 typedef enum
 {
@@ -284,7 +242,7 @@ struct _RhythmDBClass
 
 	/* signals */
 	void	(*entry_added)		(RhythmDB *db, RhythmDBEntry *entry);
-	void	(*entry_changed)	(RhythmDB *db, RhythmDBEntry *entry, GSList *changes); /* list of RhythmDBEntryChanges */
+	void	(*entry_changed)	(RhythmDB *db, RhythmDBEntry *entry, GValueArray *changes); /* array of RhythmDBEntryChanges */
 	void	(*entry_deleted)	(RhythmDB *db, RhythmDBEntry *entry);
 	void	(*entry_keyword_added)	(RhythmDB *db, RhythmDBEntry *entry, RBRefString *keyword);
 	void	(*entry_keyword_removed)(RhythmDB *db, RhythmDBEntry *entry, RBRefString *keyword);
@@ -312,7 +270,7 @@ struct _RhythmDBClass
 
 	void		(*impl_entry_delete)	(RhythmDB *db, RhythmDBEntry *entry);
 
-	void            (*impl_entry_delete_by_type) (RhythmDB *db, RhythmDBEntryType type);
+	void            (*impl_entry_delete_by_type) (RhythmDB *db, RhythmDBEntryType *type);
 
 	RhythmDBEntry *	(*impl_lookup_by_location)(RhythmDB *db, RBRefString *uri);
 
@@ -324,17 +282,16 @@ struct _RhythmDBClass
 
 	gint64		(*impl_entry_count)	(RhythmDB *db);
 
-	void		(*impl_entry_foreach_by_type) (RhythmDB *db, RhythmDBEntryType type, GFunc func, gpointer data);
+	void		(*impl_entry_foreach_by_type) (RhythmDB *db, RhythmDBEntryType *type, GFunc func, gpointer data);
 
-	gint64		(*impl_entry_count_by_type) (RhythmDB *db, RhythmDBEntryType type);
+	gint64		(*impl_entry_count_by_type) (RhythmDB *db, RhythmDBEntryType *type);
 
 	void		(*impl_do_full_query)	(RhythmDB *db, RhythmDBQuery *query,
 						 RhythmDBQueryResults *results,
 						 gboolean *cancel);
 
 	void		(*impl_entry_type_registered) (RhythmDB *db,
-						       const char *name,
-						       RhythmDBEntryType type);
+						       RhythmDBEntryType *type);
 
 	gboolean	(*impl_entry_keyword_add)	(RhythmDB *db,
 							 RhythmDBEntry *entry,
@@ -364,23 +321,19 @@ void		rhythmdb_start_action_thread	(RhythmDB *db);
 
 void		rhythmdb_commit		(RhythmDB *db);
 
-gboolean	rhythmdb_entry_is_editable (RhythmDB *db, RhythmDBEntry *entry);
+RhythmDBEntry *	rhythmdb_entry_new	(RhythmDB *db, RhythmDBEntryType *type, const char *uri);
+RhythmDBEntry *	rhythmdb_entry_example_new	(RhythmDB *db, RhythmDBEntryType *type, const char *uri);
 
-RhythmDBEntry *	rhythmdb_entry_new	(RhythmDB *db, RhythmDBEntryType type, const char *uri);
-RhythmDBEntry *	rhythmdb_entry_example_new	(RhythmDB *db, RhythmDBEntryType type, const char *uri);
-
-void		rhythmdb_add_uri	(RhythmDB *db, const char *uri);
+void		rhythmdb_add_uri	(RhythmDB *db, const char *uri);		/* <-- die */
 void		rhythmdb_add_uri_with_types (RhythmDB *db,
 					     const char *uri,
-					     RhythmDBEntryType type,
-					     RhythmDBEntryType ignore_type,
-					     RhythmDBEntryType error_type);
+					     RhythmDBEntryType *type,
+					     RhythmDBEntryType *ignore_type,
+					     RhythmDBEntryType *error_type);
 
 void		rhythmdb_entry_get	(RhythmDB *db, RhythmDBEntry *entry, RhythmDBPropType propid, GValue *val);
 void		rhythmdb_entry_set	(RhythmDB *db, RhythmDBEntry *entry,
 					 guint propid, const GValue *value);
-
-char *		rhythmdb_entry_get_playback_uri	(RhythmDBEntry *entry);
 
 gboolean	rhythmdb_entry_is_lossless (RhythmDBEntry *entry);
 
@@ -389,7 +342,7 @@ gpointer	rhythmdb_entry_get_type_data (RhythmDBEntry *entry, guint expected_size
 
 void		rhythmdb_entry_delete	(RhythmDB *db, RhythmDBEntry *entry);
 void            rhythmdb_entry_delete_by_type (RhythmDB *db,
-					       RhythmDBEntryType type);
+					       RhythmDBEntryType *type);
 void		rhythmdb_entry_move_to_trash (RhythmDB *db,
 					      RhythmDBEntry *entry);
 
@@ -408,11 +361,11 @@ void		rhythmdb_entry_foreach		(RhythmDB *db,
 gint64		rhythmdb_entry_count		(RhythmDB *db);
 
 void		rhythmdb_entry_foreach_by_type  (RhythmDB *db,
-						 RhythmDBEntryType entry_type,
+						 RhythmDBEntryType *entry_type,
 						 GFunc func,
 						 gpointer data);
 gint64		rhythmdb_entry_count_by_type	(RhythmDB *db,
-						 RhythmDBEntryType entry_type);
+						 RhythmDBEntryType *entry_type);
 
 gboolean	rhythmdb_entry_keyword_add	(RhythmDB *db,
 						 RhythmDBEntry *entry,
@@ -425,6 +378,11 @@ gboolean	rhythmdb_entry_keyword_has	(RhythmDB *db,
 						 RBRefString *keyword);
 GList* /*<RBRefString>*/ rhythmdb_entry_keywords_get	(RhythmDB *db,
 							 RhythmDBEntry *entry);
+
+void		rhythmdb_entry_write_metadata_changes (RhythmDB *db,
+						 RhythmDBEntry *entry,
+						 GSList *changes,
+						 GError **error);
 
 /*
  * Returns a freshly allocated GtkTreeModel which represents the query.
@@ -468,9 +426,9 @@ RhythmDBQuery *	rhythmdb_query_copy			(RhythmDBQuery *array);
 void		rhythmdb_query_preprocess		(RhythmDB *db, RhythmDBQuery *query);
 
 void		rhythmdb_query_serialize		(RhythmDB *db, RhythmDBQuery *query,
-							 xmlNodePtr node);
+							 xmlNodePtr parent);
 
-RhythmDBQuery *	rhythmdb_query_deserialize		(RhythmDB *db, xmlNodePtr node);
+RhythmDBQuery *	rhythmdb_query_deserialize		(RhythmDB *db, xmlNodePtr parent);
 
 char *		rhythmdb_query_to_string		(RhythmDB *db, RhythmDBQuery *query);
 
@@ -487,19 +445,14 @@ RBStringValueMap* rhythmdb_entry_gather_metadata	(RhythmDB *db, RhythmDBEntry *e
 void		rhythmdb_emit_entry_extra_metadata_notify (RhythmDB *db, RhythmDBEntry *entry, const gchar *property_name, const GValue *metadata);
 
 gboolean	rhythmdb_is_busy			(RhythmDB *db);
+void		rhythmdb_get_progress_info		(RhythmDB *db, char **text, float *progress);
 char *		rhythmdb_compute_status_normal		(gint n_songs, glong duration,
 							 guint64 size,
 							 const char *singular,
 							 const char *plural);
 
-RhythmDBEntryType rhythmdb_entry_register_type          (RhythmDB *db, const char *name);
-RhythmDBEntryType rhythmdb_entry_type_get_by_name       (RhythmDB *db, const char *name);
-
-RhythmDBEntryType rhythmdb_entry_song_get_type          (void);
-RhythmDBEntryType rhythmdb_entry_podcast_post_get_type  (void);
-RhythmDBEntryType rhythmdb_entry_podcast_feed_get_type  (void);
-RhythmDBEntryType rhythmdb_entry_import_error_get_type	(void);
-RhythmDBEntryType rhythmdb_entry_ignore_get_type        (void);
+void		rhythmdb_register_entry_type		(RhythmDB *db, RhythmDBEntryType *entry_type);
+RhythmDBEntryType *rhythmdb_entry_type_get_by_name      (RhythmDB *db, const char *name);
 
 GType rhythmdb_get_property_type (RhythmDB *db, guint property_id);
 

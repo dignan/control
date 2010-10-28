@@ -7,6 +7,7 @@ LDADD = \
 	$(top_builddir)/rhythmdb/librhythmdb.la 		\
 	$(top_builddir)/metadata/librbmetadata.la		\
 	$(top_builddir)/widgets/librbwidgets.la			\
+	$(top_builddir)/podcast/librbpodcast.la			\
 	$(top_builddir)/lib/librb.la				\
 	$(RHYTHMBOX_LIBS)
 
@@ -35,8 +36,9 @@ test_rb_lib_SOURCES = \
 	$(test_utils)
 
 test_audioscrobbler_SOURCES = \
-	test-audioscrobbler.c					\
-	$(top_srcdir)/plugins/audioscrobbler/rb-audioscrobbler-entry.c \
+	test-audioscrobbler.c								\
+	$(top_srcdir)/plugins/audioscrobbler/rb-audioscrobbler-entry.c			\
+	$(top_srcdir)/plugins/audioscrobbler/rb-audioscrobbler-radio-track-entry-type.c	\
 	$(test_utils)
 
 test_widgets_SOURCES = \
@@ -54,6 +56,7 @@ INCLUDES = 							\
 	-I$(top_srcdir)/metadata				\
 	-I$(top_srcdir)/widgets					\
 	-I$(top_srcdir)/rhythmdb				\
+	-I$(top_srcdir)/podcast					\
 	-I$(top_srcdir)/plugins/audioscrobbler			\
 	-D_XOPEN_SOURCE -D_BSD_SOURCE
 

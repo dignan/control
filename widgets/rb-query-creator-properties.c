@@ -39,6 +39,7 @@
 const RBQueryCreatorPropertyType string_property_type;
 const RBQueryCreatorPropertyType escaped_string_property_type;
 const RBQueryCreatorPropertyType rating_property_type;
+const RBQueryCreatorPropertyType double_property_type;
 const RBQueryCreatorPropertyType integer_property_type;
 const RBQueryCreatorPropertyType year_property_type;
 const RBQueryCreatorPropertyType duration_property_type;
@@ -52,6 +53,9 @@ static void escapedStringCriteriaGetWidgetData (GtkWidget *widget, GValue *val);
 static GtkWidget * ratingCriteriaCreateWidget (gboolean *constrain);
 static void ratingCriteriaSetWidgetData (GtkWidget *widget, GValue *val);
 static void ratingCriteriaGetWidgetData (GtkWidget *widget, GValue *val);
+static GtkWidget * doubleCriteriaCreateWidget (gboolean *constrain);
+static void doubleCriteriaSetWidgetData (GtkWidget *widget, GValue *val);
+static void doubleCriteriaGetWidgetData (GtkWidget *widget, GValue *val);
 static GtkWidget * integerCriteriaCreateWidget (gboolean *constrain);
 static void integerCriteriaSetWidgetData (GtkWidget *widget, GValue *val);
 static void integerCriteriaGetWidgetData (GtkWidget *widget, GValue *val);
@@ -70,23 +74,25 @@ static void relativeTimeCriteriaGetWidgetData (GtkWidget *widget, GValue *val);
  */
 const RBQueryCreatorPropertyOption property_options[] =
 {
-	{ N_("Title"), RHYTHMDB_PROP_TITLE, RHYTHMDB_PROP_TITLE_FOLDED, &string_property_type },
-	{ N_("Artist"), RHYTHMDB_PROP_ARTIST, RHYTHMDB_PROP_ARTIST_FOLDED, &string_property_type },
-	{ N_("Album"), RHYTHMDB_PROP_ALBUM, RHYTHMDB_PROP_ALBUM_FOLDED, &string_property_type },
-	{ N_("Genre"), RHYTHMDB_PROP_GENRE, RHYTHMDB_PROP_GENRE_FOLDED, &string_property_type },
-	{ N_("Year"), RHYTHMDB_PROP_DATE, RHYTHMDB_PROP_DATE, &year_property_type },
-	{ N_("Rating"), RHYTHMDB_PROP_RATING, RHYTHMDB_PROP_RATING, &rating_property_type },
-	{ N_("Path"), RHYTHMDB_PROP_LOCATION, RHYTHMDB_PROP_LOCATION, &escaped_string_property_type },
+	{ NC_("query-criteria", "Title"), RHYTHMDB_PROP_TITLE, RHYTHMDB_PROP_TITLE_FOLDED, &string_property_type },
+	{ NC_("query-criteria", "Artist"), RHYTHMDB_PROP_ARTIST, RHYTHMDB_PROP_ARTIST_FOLDED, &string_property_type },
+	{ NC_("query-criteria", "Album"), RHYTHMDB_PROP_ALBUM, RHYTHMDB_PROP_ALBUM_FOLDED, &string_property_type },
+	{ NC_("query-criteria", "Album Artist"), RHYTHMDB_PROP_ALBUM_ARTIST, RHYTHMDB_PROP_ALBUM_ARTIST_FOLDED, &string_property_type },
+	{ NC_("query-criteria", "Genre"), RHYTHMDB_PROP_GENRE, RHYTHMDB_PROP_GENRE_FOLDED, &string_property_type },
+	{ NC_("query-criteria", "Year"), RHYTHMDB_PROP_DATE, RHYTHMDB_PROP_DATE, &year_property_type },
+	{ NC_("query-criteria", "Rating"), RHYTHMDB_PROP_RATING, RHYTHMDB_PROP_RATING, &rating_property_type },
+	{ NC_("query-criteria", "Path"), RHYTHMDB_PROP_LOCATION, RHYTHMDB_PROP_LOCATION, &escaped_string_property_type },
+	{ NC_("query-criteria", "Comment"), RHYTHMDB_PROP_COMMENT, RHYTHMDB_PROP_COMMENT, &string_property_type },
 
-	{ N_("Play Count"), RHYTHMDB_PROP_PLAY_COUNT, RHYTHMDB_PROP_PLAY_COUNT, &integer_property_type },
-	{ N_("Track Number"), RHYTHMDB_PROP_TRACK_NUMBER, RHYTHMDB_PROP_TRACK_NUMBER, &integer_property_type },
-	{ N_("Disc Number"), RHYTHMDB_PROP_DISC_NUMBER, RHYTHMDB_PROP_DISC_NUMBER, &integer_property_type },
-	{ N_("Bitrate"), RHYTHMDB_PROP_BITRATE, RHYTHMDB_PROP_BITRATE, &integer_property_type },
+	{ NC_("query-criteria", "Play Count"), RHYTHMDB_PROP_PLAY_COUNT, RHYTHMDB_PROP_PLAY_COUNT, &integer_property_type },
+	{ NC_("query-criteria", "Track Number"), RHYTHMDB_PROP_TRACK_NUMBER, RHYTHMDB_PROP_TRACK_NUMBER, &integer_property_type },
+	{ NC_("query-criteria", "Disc Number"), RHYTHMDB_PROP_DISC_NUMBER, RHYTHMDB_PROP_DISC_NUMBER, &integer_property_type },
+	{ NC_("query-criteria", "Bitrate"), RHYTHMDB_PROP_BITRATE, RHYTHMDB_PROP_BITRATE, &integer_property_type },
 
-	{ N_("Duration"), RHYTHMDB_PROP_DURATION, RHYTHMDB_PROP_DURATION, &duration_property_type },
-
-	{ N_("Time of Last Play"), RHYTHMDB_PROP_LAST_PLAYED, RHYTHMDB_PROP_LAST_PLAYED, &relative_time_property_type },
-	{ N_("Time Added to Library"), RHYTHMDB_PROP_FIRST_SEEN, RHYTHMDB_PROP_FIRST_SEEN, &relative_time_property_type },
+	{ NC_("query-criteria", "Duration"), RHYTHMDB_PROP_DURATION, RHYTHMDB_PROP_DURATION, &duration_property_type },
+	{ NC_("query-criteria", "Beats Per Minute"), RHYTHMDB_PROP_BPM, RHYTHMDB_PROP_BPM, &double_property_type },
+	{ NC_("query-criteria", "Time of Last Play"), RHYTHMDB_PROP_LAST_PLAYED, RHYTHMDB_PROP_LAST_PLAYED, &relative_time_property_type },
+	{ NC_("query-criteria", "Time Added to Library"), RHYTHMDB_PROP_FIRST_SEEN, RHYTHMDB_PROP_FIRST_SEEN, &relative_time_property_type },
 };
 
 const int num_property_options = G_N_ELEMENTS (property_options);
@@ -97,17 +103,20 @@ const int num_property_options = G_N_ELEMENTS (property_options);
  */
 const RBQueryCreatorSortOption sort_options[] =
 {
-	{ N_("Artist"), "Artist", N_("_In reverse alphabetical order") },
-	{ N_("Album"), "Album", N_("_In reverse alphabetical order") },
-	{ N_("Genre"), "Genre", N_("_In reverse alphabetical order") },
-	{ N_("Title"), "Title", N_("_In reverse alphabetical order") },
-	{ N_("Rating"), "Rating", N_("W_ith more highly rated tracks first") },
-	{ N_("Play Count"), "PlayCount", N_("W_ith more often played songs first") },
-	{ N_("Year"), "Year", N_("W_ith newer tracks first") },
-	{ N_("Duration"), "Time", N_("W_ith longer tracks first") },
-	{ N_("Track Number"), "Track", N_("_In decreasing order")},
-	{ N_("Last Played"), "LastPlayed", N_("W_ith more recently played tracks first") },
-	{ N_("Date Added"), "FirstSeen", N_("W_ith more recently added tracks first") },
+	{ NC_("query-sort", "Artist"), "Artist", N_("_In reverse alphabetical order") },
+	{ NC_("query-sort", "Album"), "Album", N_("_In reverse alphabetical order") },
+	{ NC_("query-sort", "Album Artist"), "AlbumArtist", N_("_In reverse alphabetical order") },
+	{ NC_("query-sort", "Genre"), "Genre", N_("_In reverse alphabetical order") },
+	{ NC_("query-sort", "Title"), "Title", N_("_In reverse alphabetical order") },
+	{ NC_("query-sort", "Rating"), "Rating", N_("W_ith more highly rated tracks first") },
+	{ NC_("query-sort", "Play Count"), "PlayCount", N_("W_ith more often played songs first") },
+	{ NC_("query-sort", "Year"), "Year", N_("W_ith newer tracks first") },
+	{ NC_("query-sort", "Duration"), "Time", N_("W_ith longer tracks first") },
+	{ NC_("query-sort", "Track Number"), "Track", N_("_In decreasing order")},
+	{ NC_("query-sort", "Last Played"), "LastPlayed", N_("W_ith more recently played tracks first") },
+	{ NC_("query-sort", "Date Added"), "FirstSeen", N_("W_ith more recently added tracks first") },
+	{ NC_("query-sort", "Comment"), "Comment", N_("_In reverse alphabetical order") },
+	{ NC_("query-sort", "Beats Per Minute"), "BPM", N_("W_ith faster tempo tracks first") },
 };
 
 const int num_sort_options = G_N_ELEMENTS (sort_options);
@@ -123,6 +132,7 @@ const RBQueryCreatorCriteriaOption string_criteria_options[] =
 	{ N_("contains"), 0, RHYTHMDB_QUERY_PROP_LIKE },
 	{ N_("does not contain"), 0, RHYTHMDB_QUERY_PROP_NOT_LIKE },
 	{ N_("equals"), 1, RHYTHMDB_QUERY_PROP_EQUALS },
+	{ N_("not equal to"), 1, RHYTHMDB_QUERY_PROP_NOT_EQUAL },
 	{ N_("starts with"), 0, RHYTHMDB_QUERY_PROP_PREFIX },
 	{ N_("ends with"), 0, RHYTHMDB_QUERY_PROP_SUFFIX },
 };
@@ -152,6 +162,7 @@ const RBQueryCreatorPropertyType escaped_string_property_type =
 const RBQueryCreatorCriteriaOption numeric_criteria_options[] =
 {
 	{ N_("equals"), 1, RHYTHMDB_QUERY_PROP_EQUALS },
+	{ N_("not equal to"), 1, RHYTHMDB_QUERY_PROP_NOT_EQUAL },
 	{ N_("at least"), 1, RHYTHMDB_QUERY_PROP_GREATER },	/* matches if A >= B */
 	{ N_("at most"), 1, RHYTHMDB_QUERY_PROP_LESS }		/* matches if A <= B */
 };
@@ -164,6 +175,8 @@ const RBQueryCreatorCriteriaOption year_criteria_options[] =
 {
 	/* Translators: this matches songs within 1-Jan-YEAR to 31-Dec-YEAR */
 	{ N_("in"), 1, RHYTHMDB_QUERY_PROP_YEAR_EQUALS },
+	/* Translators: this matches songs before 1-Jan-YEAR or after 31-Dec-YEAR */
+	{ N_("not in"), 1, RHYTHMDB_QUERY_PROP_YEAR_NOT_EQUAL },
 	/* Translators: this matches songs after 31-Dec-YEAR */
 	{ N_("after"), 1, RHYTHMDB_QUERY_PROP_YEAR_GREATER },
 	/* Translators: this matches songs before 1-Jan-YEAR */
@@ -177,6 +190,15 @@ const RBQueryCreatorPropertyType rating_property_type =
 	ratingCriteriaCreateWidget,
 	ratingCriteriaSetWidgetData,
 	ratingCriteriaGetWidgetData
+};
+
+const RBQueryCreatorPropertyType double_property_type =
+{
+	G_N_ELEMENTS (numeric_criteria_options),
+	numeric_criteria_options,
+	doubleCriteriaCreateWidget,
+	doubleCriteriaSetWidgetData,
+	doubleCriteriaGetWidgetData
 };
 
 const RBQueryCreatorPropertyType integer_property_type =
@@ -331,6 +353,37 @@ ratingCriteriaGetWidgetData (GtkWidget *widget, GValue *val)
 	g_value_set_double (val, rating);
 }
 
+/*
+ * Implementation for the double properties, using a single GtkSpinButton.
+ */
+
+static GtkWidget *
+doubleCriteriaCreateWidget (gboolean *constrain)
+{
+	GtkWidget *spin;
+	spin = gtk_spin_button_new_with_range (0.0, G_MAXDOUBLE, 1.0);
+	gtk_spin_button_set_digits(GTK_SPIN_BUTTON(spin), 2);
+	return spin;
+}
+
+static void
+doubleCriteriaSetWidgetData (GtkWidget *widget, GValue *val)
+{
+	gdouble num = g_value_get_double (val);
+	g_assert (num <= G_MAXDOUBLE);
+
+	gtk_spin_button_set_value (GTK_SPIN_BUTTON (widget), num );
+}
+
+static void
+doubleCriteriaGetWidgetData (GtkWidget *widget, GValue *val)
+{
+	gdouble num = gtk_spin_button_get_value (GTK_SPIN_BUTTON (widget));
+	g_assert (num >= 0);
+
+	g_value_init (val, G_TYPE_DOUBLE);
+	g_value_set_double (val, num);
+}
 /*
  * Implementation for the integer properties, using a single GtkSpinButton.
  */
@@ -515,7 +568,7 @@ relativeTimeCriteriaCreateWidget (gboolean *constrain)
 	timeOption = create_time_unit_option_menu (time_unit_options, G_N_ELEMENTS (time_unit_options));
 	gtk_combo_box_set_active (GTK_COMBO_BOX (timeOption), time_unit_options_default);
 	gtk_box_pack_start (box, timeOption, TRUE, TRUE, 0);
-	
+
 	g_signal_connect_object (timeOption, "changed",
 				 G_CALLBACK (update_time_unit_limits),
 				 timeSpin, 0);

@@ -54,6 +54,7 @@
 #include "rb-debug.h"
 #include "rb-util.h"
 #include "rb-file-helpers.h"
+#include "rb-podcast-entry-types.h"
 
 typedef struct RhythmDBTreeProperty
 {
@@ -78,14 +79,14 @@ static gboolean rhythmdb_tree_entry_set (RhythmDB *db, RhythmDBEntry *entry,
 					 guint propid, const GValue *value);
 
 static void rhythmdb_tree_entry_delete (RhythmDB *db, RhythmDBEntry *entry);
-static void rhythmdb_tree_entry_delete_by_type (RhythmDB *adb, RhythmDBEntryType type);
+static void rhythmdb_tree_entry_delete_by_type (RhythmDB *adb, RhythmDBEntryType *type);
 
 static RhythmDBEntry * rhythmdb_tree_entry_lookup_by_location (RhythmDB *db, RBRefString *uri);
 static RhythmDBEntry * rhythmdb_tree_entry_lookup_by_id (RhythmDB *db, gint id);
 static void rhythmdb_tree_entry_foreach (RhythmDB *adb, GFunc func, gpointer user_data);
 static gint64 rhythmdb_tree_entry_count (RhythmDB *adb);
-static void rhythmdb_tree_entry_foreach_by_type (RhythmDB *adb, RhythmDBEntryType type, GFunc func, gpointer user_data);
-static gint64 rhythmdb_tree_entry_count_by_type (RhythmDB *adb, RhythmDBEntryType type);
+static void rhythmdb_tree_entry_foreach_by_type (RhythmDB *adb, RhythmDBEntryType *type, GFunc func, gpointer user_data);
+static gint64 rhythmdb_tree_entry_count_by_type (RhythmDB *adb, RhythmDBEntryType *type);
 static gboolean rhythmdb_tree_entry_keyword_add (RhythmDB *adb, RhythmDBEntry *entry, RBRefString *keyword);
 static gboolean rhythmdb_tree_entry_keyword_remove (RhythmDB *adb, RhythmDBEntry *entry, RBRefString *keyword);
 static gboolean rhythmdb_tree_entry_keyword_has (RhythmDB *adb, RhythmDBEntry *entry, RBRefString *keyword);
@@ -96,8 +97,7 @@ static void rhythmdb_tree_do_full_query (RhythmDB *db, GPtrArray *query,
 static gboolean rhythmdb_tree_evaluate_query (RhythmDB *adb, GPtrArray *query,
 				       RhythmDBEntry *aentry);
 static void rhythmdb_tree_entry_type_registered (RhythmDB *db,
-						 const char *name,
-						 RhythmDBEntryType type);
+						 RhythmDBEntryType *type);
 
 typedef void (*RBTreeEntryItFunc)(RhythmDBTree *db,
 				  RhythmDBEntry *entry,
@@ -107,7 +107,7 @@ typedef void (*RBTreePropertyItFunc)(RhythmDBTree *db,
 				     RhythmDBTreeProperty *property,
 				     gpointer data);
 static void rhythmdb_hash_tree_foreach (RhythmDB *adb,
-					RhythmDBEntryType type,
+					RhythmDBEntryType *type,
 					RBTreeEntryItFunc entry_func,
 					RBTreePropertyItFunc album_func,
 					RBTreePropertyItFunc artist_func,
@@ -115,15 +115,15 @@ static void rhythmdb_hash_tree_foreach (RhythmDB *adb,
 					gpointer data);
 
 /* Update both of those! */
-#define RHYTHMDB_TREE_XML_VERSION "1.6"
-#define RHYTHMDB_TREE_XML_VERSION_INT 160
+#define RHYTHMDB_TREE_XML_VERSION "1.7"
+#define RHYTHMDB_TREE_XML_VERSION_INT 170
 
 static void destroy_tree_property (RhythmDBTreeProperty *prop);
 static RhythmDBTreeProperty *get_or_create_album (RhythmDBTree *db, RhythmDBTreeProperty *artist,
 						  RBRefString *name);
 static RhythmDBTreeProperty *get_or_create_artist (RhythmDBTree *db, RhythmDBTreeProperty *genre,
 						   RBRefString *name);
-static RhythmDBTreeProperty *get_or_create_genre (RhythmDBTree *db, RhythmDBEntryType type,
+static RhythmDBTreeProperty *get_or_create_genre (RhythmDBTree *db, RhythmDBEntryType *type,
 							 RBRefString *name);
 
 static void remove_entry_from_album (RhythmDBTree *db, RhythmDBEntry *entry);
@@ -334,6 +334,7 @@ struct RhythmDBTreeLoadContext
 	guint canonicalise_uris : 1;
 	guint reload_all_metadata : 1;
 	guint update_podcasts : 1;
+	guint update_local_mountpoints : 1;
 };
 
 /* Returns the version as an int, multiplied by 100,
@@ -342,11 +343,12 @@ static int
 version_to_int (const char *version)
 {
 	float ver;
+	char *eptr;
 
-	if (sscanf (version, "%f", &ver) != 1) {
+	ver = g_ascii_strtod (version, &eptr);
+	if (eptr == version) {
 		return (int) (1.0 * 100);
 	}
-
 	return (int)roundf(ver * 100);
 }
 
@@ -394,6 +396,10 @@ rhythmdb_tree_parser_start_element (struct RhythmDBTreeLoadContext *ctx,
 					case 150:
 						rb_debug ("Upgrade Podcasts remote vs. local locations");
 						ctx->update_podcasts = TRUE;
+					case 160:
+						rb_debug ("reloading all file metadata to get sortnames, album artist, comments, bpm and updating mountpoints");
+						ctx->reload_all_metadata = TRUE;
+						ctx->update_local_mountpoints = TRUE;
 					case RHYTHMDB_TREE_XML_VERSION_INT:
 						/* current version */
 						break;
@@ -421,7 +427,7 @@ rhythmdb_tree_parser_start_element (struct RhythmDBTreeLoadContext *ctx,
 	case RHYTHMDB_TREE_PARSER_STATE_RHYTHMDB:
 	{
 		if (!strcmp (name, "entry")) {
-			RhythmDBEntryType type = RHYTHMDB_ENTRY_TYPE_INVALID;
+			RhythmDBEntryType *type = NULL;
 			const char *typename = NULL;
 			for (; *attrs; attrs +=2) {
 				if (!strcmp (*attrs, "type")) {
@@ -432,7 +438,7 @@ rhythmdb_tree_parser_start_element (struct RhythmDBTreeLoadContext *ctx,
 			}
 
 			g_assert (typename);
-			if (type != RHYTHMDB_ENTRY_TYPE_INVALID) {
+			if (type != NULL) {
 				ctx->state = RHYTHMDB_TREE_PARSER_STATE_ENTRY;
 				ctx->entry = rhythmdb_entry_allocate (RHYTHMDB (ctx->db), type);
 				ctx->entry->flags |= RHYTHMDB_ENTRY_TREE_LOADING;
@@ -533,6 +539,28 @@ rhythmdb_tree_parser_end_element (struct RhythmDBTreeLoadContext *ctx,
 				tmp = ctx->entry->location;
 				ctx->entry->location = ctx->entry->mountpoint;
 				ctx->entry->mountpoint = tmp;
+			}
+		}
+		if (ctx->entry->type == RHYTHMDB_ENTRY_TYPE_SONG) {
+			/* Since we now care about mountpoints for all local entries, not just
+			 * those on things that actually get mounted and unmounted, we need to
+			 * ensure they're all correct.
+			 */
+			if (ctx->update_local_mountpoints) {
+				const char *loc = rb_refstring_get (ctx->entry->location);
+				if (loc == NULL || g_str_has_prefix (loc, "file:///")) {
+					char *nmp;
+					nmp = rb_uri_get_mount_point (loc);
+					if (ctx->entry->mountpoint != NULL) {
+						rb_refstring_unref (ctx->entry->mountpoint);
+						ctx->entry->mountpoint = NULL;
+					}
+
+					if (nmp != NULL) {
+						ctx->entry->mountpoint = rb_refstring_new (nmp);
+						g_free (nmp);
+					}
+				}
 			}
 		}
 
@@ -638,6 +666,13 @@ rhythmdb_tree_parser_end_element (struct RhythmDBTreeLoadContext *ctx,
 				g_value_take_string (&value, canon);
 				set = TRUE;
 			}
+			break;
+			/* drop replaygain properties */
+		case RHYTHMDB_PROP_TRACK_GAIN:
+		case RHYTHMDB_PROP_TRACK_PEAK:
+		case RHYTHMDB_PROP_ALBUM_GAIN:
+		case RHYTHMDB_PROP_ALBUM_PEAK:
+			skip = TRUE;
 			break;
 		default:
 			break;
@@ -836,6 +871,16 @@ save_entry_string (struct RhythmDBTreeSaveContext *ctx,
 }
 
 static void
+save_entry_string_if_set (struct RhythmDBTreeSaveContext *ctx,
+			  const xmlChar *elt_name,
+			  const char *str)
+{
+	if (str == NULL || str[0] == '\0')
+		return;
+	save_entry_string (ctx, elt_name, str);
+}
+
+static void
 save_entry_int (struct RhythmDBTreeSaveContext *ctx,
 		const xmlChar *elt_name,
 		int num)
@@ -926,7 +971,7 @@ save_entry (RhythmDBTree *db,
 		podcast = RHYTHMDB_ENTRY_GET_TYPE_DATA (entry, RhythmDBPodcastFields);
 
 	RHYTHMDB_FWRITE_STATICSTR ("  <entry type=\"", ctx->handle, ctx->error);
-	encoded	= xmlEncodeEntitiesReentrant (NULL, BAD_CAST entry->type->name);
+	encoded	= xmlEncodeEntitiesReentrant (NULL, BAD_CAST rhythmdb_entry_type_get_name (entry->type));
 	RHYTHMDB_FWRITE (encoded, 1, xmlStrlen (encoded), ctx->handle, ctx->error);
 	g_free (encoded);
 
@@ -955,26 +1000,35 @@ save_entry (RhythmDBTree *db,
 		case RHYTHMDB_PROP_ARTIST:
 			save_entry_string(ctx, elt_name, rb_refstring_get (entry->artist));
 			break;
+		case RHYTHMDB_PROP_ALBUM_ARTIST:
+			save_entry_string_if_set(ctx, elt_name, rb_refstring_get (entry->album_artist));
+			break;
 		case RHYTHMDB_PROP_GENRE:
 			save_entry_string(ctx, elt_name, rb_refstring_get (entry->genre));
 			break;
+		case RHYTHMDB_PROP_COMMENT:
+			save_entry_string_if_set(ctx, elt_name, rb_refstring_get (entry->comment));
+			break;
 		case RHYTHMDB_PROP_MUSICBRAINZ_TRACKID:
-			save_entry_string(ctx, elt_name, rb_refstring_get (entry->musicbrainz_trackid));
+			save_entry_string_if_set (ctx, elt_name, rb_refstring_get (entry->musicbrainz_trackid));
 			break;
 		case RHYTHMDB_PROP_MUSICBRAINZ_ARTISTID:
-			save_entry_string(ctx, elt_name, rb_refstring_get (entry->musicbrainz_artistid));
+			save_entry_string_if_set (ctx, elt_name, rb_refstring_get (entry->musicbrainz_artistid));
 			break;
 		case RHYTHMDB_PROP_MUSICBRAINZ_ALBUMID:
-			save_entry_string(ctx, elt_name, rb_refstring_get (entry->musicbrainz_albumid));
+			save_entry_string_if_set (ctx, elt_name, rb_refstring_get (entry->musicbrainz_albumid));
 			break;
 		case RHYTHMDB_PROP_MUSICBRAINZ_ALBUMARTISTID:
-			save_entry_string(ctx, elt_name, rb_refstring_get (entry->musicbrainz_albumartistid));
+			save_entry_string_if_set (ctx, elt_name, rb_refstring_get (entry->musicbrainz_albumartistid));
 			break;
 		case RHYTHMDB_PROP_ARTIST_SORTNAME:
-			save_entry_string(ctx, elt_name, rb_refstring_get (entry->artist_sortname));
+			save_entry_string_if_set (ctx, elt_name, rb_refstring_get (entry->artist_sortname));
 			break;
 		case RHYTHMDB_PROP_ALBUM_SORTNAME:
-			save_entry_string(ctx, elt_name, rb_refstring_get (entry->album_sortname));
+			save_entry_string_if_set (ctx, elt_name, rb_refstring_get (entry->album_sortname));
+			break;
+		case RHYTHMDB_PROP_ALBUM_ARTIST_SORTNAME:
+			save_entry_string_if_set (ctx, elt_name, rb_refstring_get (entry->album_artist_sortname));
 			break;
 		case RHYTHMDB_PROP_TRACK_NUMBER:
 			save_entry_ulong (ctx, elt_name, entry->tracknum, FALSE);
@@ -994,27 +1048,14 @@ save_entry (RhythmDBTree *db,
 		case RHYTHMDB_PROP_BITRATE:
 			save_entry_int(ctx, elt_name, entry->bitrate);
 			break;
-		case RHYTHMDB_PROP_TRACK_GAIN:
-			save_entry_double(ctx, elt_name, entry->track_gain);
-			break;
-		case RHYTHMDB_PROP_TRACK_PEAK:
-			save_entry_double(ctx, elt_name, entry->track_peak);
-			break;
-		case RHYTHMDB_PROP_ALBUM_GAIN:
-			save_entry_double(ctx, elt_name, entry->album_gain);
-			break;
-		case RHYTHMDB_PROP_ALBUM_PEAK:
-			save_entry_double(ctx, elt_name, entry->album_peak);
-			break;
 		case RHYTHMDB_PROP_LOCATION:
 			save_entry_string(ctx, elt_name, rb_refstring_get (entry->location));
 			break;
+		case RHYTHMDB_PROP_BPM:
+			save_entry_double(ctx, elt_name, entry->bpm);
+			break;
 		case RHYTHMDB_PROP_MOUNTPOINT:
-			/* Avoid crashes on exit when upgrading from 0.8
-			 * and no mountpoint is available from some entries */
-			if (entry->mountpoint) {
-				save_entry_string(ctx, elt_name, rb_refstring_get (entry->mountpoint));
-			}
+			save_entry_string_if_set (ctx, elt_name, rb_refstring_get (entry->mountpoint));
 			break;
 		case RHYTHMDB_PROP_FILE_SIZE:
 			save_entry_uint64(ctx, elt_name, entry->file_size);
@@ -1099,10 +1140,18 @@ save_entry (RhythmDBTree *db,
 		case RHYTHMDB_PROP_GENRE_SORT_KEY:
 		case RHYTHMDB_PROP_ARTIST_SORT_KEY:
 		case RHYTHMDB_PROP_ALBUM_SORT_KEY:
+		case RHYTHMDB_PROP_ALBUM_ARTIST_SORT_KEY:
+		case RHYTHMDB_PROP_ARTIST_SORTNAME_SORT_KEY:
+		case RHYTHMDB_PROP_ALBUM_SORTNAME_SORT_KEY:
+		case RHYTHMDB_PROP_ALBUM_ARTIST_SORTNAME_SORT_KEY:
 		case RHYTHMDB_PROP_TITLE_FOLDED:
 		case RHYTHMDB_PROP_GENRE_FOLDED:
 		case RHYTHMDB_PROP_ARTIST_FOLDED:
 		case RHYTHMDB_PROP_ALBUM_FOLDED:
+		case RHYTHMDB_PROP_ALBUM_ARTIST_FOLDED:
+		case RHYTHMDB_PROP_ARTIST_SORTNAME_FOLDED:
+		case RHYTHMDB_PROP_ALBUM_SORTNAME_FOLDED:
+		case RHYTHMDB_PROP_ALBUM_ARTIST_SORTNAME_FOLDED:
 		case RHYTHMDB_PROP_LAST_PLAYED_STR:
 		case RHYTHMDB_PROP_PLAYBACK_ERROR:
 		case RHYTHMDB_PROP_FIRST_SEEN_STR:
@@ -1110,6 +1159,11 @@ save_entry (RhythmDBTree *db,
 		case RHYTHMDB_PROP_SEARCH_MATCH:
 		case RHYTHMDB_PROP_YEAR:
 		case RHYTHMDB_NUM_PROPERTIES:
+		/* obsolete replaygain properties */
+		case RHYTHMDB_PROP_TRACK_GAIN:
+		case RHYTHMDB_PROP_TRACK_PEAK:
+		case RHYTHMDB_PROP_ALBUM_GAIN:
+		case RHYTHMDB_PROP_ALBUM_PEAK:
 			break;
 		}
 	}
@@ -1119,10 +1173,12 @@ save_entry (RhythmDBTree *db,
 
 static void
 save_entry_type (const char *name,
-		 RhythmDBEntryType entry_type,
+		 RhythmDBEntryType *entry_type,
 		 struct RhythmDBTreeSaveContext *ctx)
 {
-	if (entry_type->save_to_disk == FALSE)
+	gboolean save_to_disk = FALSE;
+	g_object_get (entry_type, "save-to-disk", &save_to_disk, NULL);
+	if (save_to_disk == FALSE)
 		return;
 
 	rb_debug ("saving entries of type %s", name);
@@ -1327,7 +1383,7 @@ rhythmdb_tree_property_new (RhythmDBTree *db)
 
 static GHashTable *
 get_genres_hash_for_type (RhythmDBTree *db,
-			  RhythmDBEntryType type)
+			  RhythmDBEntryType *type)
 {
 	GHashTable *table;
 
@@ -1379,7 +1435,7 @@ genres_hash_foreach (RhythmDBTree *db, RBHFunc func, gpointer data)
 /* must be called with the genres lock held */
 static RhythmDBTreeProperty *
 get_or_create_genre (RhythmDBTree *db,
-		     RhythmDBEntryType type,
+		     RhythmDBEntryType *type,
 		     RBRefString *name)
 {
 	RhythmDBTreeProperty *genre;
@@ -1503,7 +1559,7 @@ rhythmdb_tree_entry_set (RhythmDB *adb,
 			 const GValue *value)
 {
 	RhythmDBTree *db = RHYTHMDB_TREE (adb);
-	RhythmDBEntryType type;
+	RhythmDBEntryType *type;
 
 	type = entry->type;
 
@@ -1646,7 +1702,7 @@ rhythmdb_tree_entry_delete (RhythmDB *adb,
 
 typedef struct {
 	RhythmDB *db;
-	RhythmDBEntryType type;
+	RhythmDBEntryType *type;
 } RbEntryRemovalCtxt;
 
 /* must be called with the entries and genres locks held */
@@ -1677,7 +1733,7 @@ remove_one_song (gpointer key,
 
 static void
 rhythmdb_tree_entry_delete_by_type (RhythmDB *adb,
-				    RhythmDBEntryType type)
+				    RhythmDBEntryType *type)
 {
 	RhythmDBTree *db = RHYTHMDB_TREE (adb);
 	RbEntryRemovalCtxt ctxt;
@@ -1741,7 +1797,7 @@ rhythmdb_tree_evaluate_query (RhythmDB *adb,
 #define RHYTHMDB_PROPERTY_COMPARE(OP) \
 			switch (rhythmdb_get_property_type (db, data->propid)) { \
 			case G_TYPE_STRING: \
-				if (strcmp (rhythmdb_entry_get_string (entry, data->propid), \
+				if (g_strcmp0 (rhythmdb_entry_get_string (entry, data->propid), \
 					    g_value_get_string (data->val)) OP 0) \
 					return FALSE; \
 				break; \
@@ -1765,9 +1821,9 @@ rhythmdb_tree_evaluate_query (RhythmDB *adb,
 				    g_value_get_double (data->val)) \
 					return FALSE; \
 				break; \
-                        case G_TYPE_POINTER: \
-                                if (rhythmdb_entry_get_pointer (entry, data->propid) OP \
-                                    g_value_get_pointer (data->val)) \
+                        case G_TYPE_OBJECT: \
+                                if ((gpointer)rhythmdb_entry_get_object (entry, data->propid) OP \
+                                    g_value_get_object (data->val)) \
                                         return FALSE; \
                                 break; \
 			default: \
@@ -1939,6 +1995,9 @@ evaluate_conjunctive_subquery (RhythmDBTree *dbtree,
 		case RHYTHMDB_QUERY_PROP_EQUALS:
 			RHYTHMDB_PROPERTY_COMPARE (!=)
 			break;
+		case RHYTHMDB_QUERY_PROP_NOT_EQUAL:
+			RHYTHMDB_PROPERTY_COMPARE (==)
+			break;
 		case RHYTHMDB_QUERY_PROP_GREATER:
 			RHYTHMDB_PROPERTY_COMPARE (<)
 			break;
@@ -1948,6 +2007,7 @@ evaluate_conjunctive_subquery (RhythmDBTree *dbtree,
 		case RHYTHMDB_QUERY_END:
 		case RHYTHMDB_QUERY_DISJUNCTION:
 		case RHYTHMDB_QUERY_PROP_YEAR_EQUALS:
+		case RHYTHMDB_QUERY_PROP_YEAR_NOT_EQUAL:
 		case RHYTHMDB_QUERY_PROP_YEAR_LESS:
 		case RHYTHMDB_QUERY_PROP_YEAR_GREATER:
 			g_assert_not_reached ();
@@ -2156,12 +2216,12 @@ conjunctive_query (RhythmDBTree *db,
 	g_mutex_lock (db->priv->genres_lock);
 	if (type_query_idx >= 0) {
 		GHashTable *genres;
-		RhythmDBEntryType etype;
+		RhythmDBEntryType *etype;
 		RhythmDBQueryData *qdata = g_ptr_array_index (query, type_query_idx);
 
 		g_ptr_array_remove_index_fast (query, type_query_idx);
 
-		etype = g_value_get_pointer (qdata->val);
+		etype = g_value_get_object (qdata->val);
 		genres = get_genres_hash_for_type (db, etype);
 		if (genres != NULL) {
 			conjunctive_query_genre (db, genres, traversal_data);
@@ -2382,7 +2442,7 @@ _foreach_by_type_cb (RhythmDB *db, RhythmDBEntry *entry, ForeachTypeData *data)
 
 static void
 rhythmdb_tree_entry_foreach_by_type (RhythmDB *db,
-				     RhythmDBEntryType type,
+				     RhythmDBEntryType *type,
 				     GFunc foreach_func,
 				     gpointer data)
 {
@@ -2401,7 +2461,7 @@ count_entries (RhythmDB *db, RhythmDBTreeProperty *album, gint64 *count)
 
 static gint64
 rhythmdb_tree_entry_count_by_type (RhythmDB *db,
-				   RhythmDBEntryType type)
+				   RhythmDBEntryType *type)
 {
 	gint64 count = 0;
 	rhythmdb_hash_tree_foreach (db, type,
@@ -2623,7 +2683,7 @@ hash_tree_genres_foreach (gpointer key,
 
 static void
 rhythmdb_hash_tree_foreach (RhythmDB *adb,
-			    RhythmDBEntryType type,
+			    RhythmDBEntryType *type,
 			    RBTreeEntryItFunc entry_func,
 			    RBTreePropertyItFunc album_func,
 			    RBTreePropertyItFunc artist_func,
@@ -2656,22 +2716,23 @@ rhythmdb_hash_tree_foreach (RhythmDB *adb,
 
 static void
 rhythmdb_tree_entry_type_registered (RhythmDB *db,
-				     const char *name,
-				     RhythmDBEntryType entry_type)
+				     RhythmDBEntryType *entry_type)
 {
 	GList *entries = NULL;
 	GList *e;
 	gint count = 0;
 	RhythmDBTree *rdb;
+	char *name;
 	RBRefString *rs_name;
-
-	if (name == NULL)
-		return;
 
 	rdb = RHYTHMDB_TREE (db);
 	g_mutex_lock (RHYTHMDB_TREE(rdb)->priv->entries_lock);
 
+	/* ugh, this sucks, maybe store the name as a refstring in the object? */
+	g_object_get (entry_type, "name", &name, NULL);
 	rs_name = rb_refstring_find (name);
+	g_free (name);
+
 	if (rs_name)
 		entries = g_hash_table_lookup (rdb->priv->unknown_entry_types, rs_name);
 	if (entries == NULL) {

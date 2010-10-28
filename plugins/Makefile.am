@@ -1,6 +1,5 @@
 SUBDIRS = 						\
 	audiocd						\
-	audioscrobbler					\
 	generic-player					\
 	iradio						\
 	mmkeys						\
@@ -24,6 +23,9 @@ SUBDIRS += 						\
 	coherence					\
 	im-status					\
 	context						\
+	sendto						\
+	replaygain					\
+	rbzeitgeist					\
 	rb
 endif
 
@@ -45,7 +47,7 @@ SUBDIRS += cd-recorder
 endif # HAVE_NAUTILUS_BURN
 endif # HAVE_LIBBRASERO_MEDIA
 
-if USE_DAAP
+if USE_LIBDMAPSHARING
 SUBDIRS += daap
 endif
 
@@ -57,3 +59,12 @@ if ENABLE_FM_RADIO
 SUBDIRS += fmradio
 endif
 
+if USE_GDBUS
+SUBDIRS += 						\
+	dbus-media-server				\
+	mpris
+endif
+
+if ENABLE_LASTFM
+SUBDIRS += audioscrobbler
+endif

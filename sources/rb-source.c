@@ -119,10 +119,12 @@ struct _RBSourcePrivate
 	guint hidden_when_empty : 1;
 	guint update_visibility_id;
 	guint update_status_id;
-	RhythmDBEntryType entry_type;
+	RhythmDBEntryType *entry_type;
 	RBSourceGroup *source_group;
 	RBPlugin *plugin;
 	RBSourceSearchType search_type;
+
+	gboolean deleted;
 };
 
 enum
@@ -175,6 +177,7 @@ rb_source_class_init (RBSourceClass *klass)
 	klass->impl_can_copy = (RBSourceFeatureFunc) rb_false_function;
 	klass->impl_can_add_to_queue = (RBSourceFeatureFunc) rb_false_function;
 	klass->impl_can_move_to_trash = (RBSourceFeatureFunc) rb_false_function;
+	klass->impl_can_pause = (RBSourceFeatureFunc) rb_true_function;
 	klass->impl_get_entry_view = default_get_entry_view;
 	klass->impl_copy = default_copy;
 	klass->impl_reset_filters = default_reset_filters;
@@ -286,7 +289,7 @@ rb_source_class_init (RBSourceClass *klass)
 	g_object_class_install_property (object_class,
 					 PROP_QUERY_MODEL,
 					 g_param_spec_object ("query-model",
-						 	      "RhythmDBQueryModel",
+							      "RhythmDBQueryModel",
 							      "RhythmDBQueryModel object",
 							      RHYTHMDB_TYPE_QUERY_MODEL,
 							      G_PARAM_READWRITE));
@@ -309,11 +312,11 @@ rb_source_class_init (RBSourceClass *klass)
 	 */
 	g_object_class_install_property (object_class,
 					 PROP_ENTRY_TYPE,
-					 g_param_spec_boxed ("entry-type",
-							     "Entry type",
-							     "Type of the entries which should be displayed by this source",
-							     RHYTHMDB_TYPE_ENTRY_TYPE,
-							     G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
+					 g_param_spec_object ("entry-type",
+							      "Entry type",
+							      "Type of the entries which should be displayed by this source",
+							      RHYTHMDB_TYPE_ENTRY_TYPE,
+							      G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
 	/**
 	 * RBSource:plugin:
 	 *
@@ -322,7 +325,7 @@ rb_source_class_init (RBSourceClass *klass)
 	g_object_class_install_property (object_class,
 					 PROP_PLUGIN,
 					 g_param_spec_object ("plugin",
-						 	      "RBPlugin",
+							      "RBPlugin",
 							      "RBPlugin instance for the plugin that created the source",
 							      RB_TYPE_PLUGIN,
 							      G_PARAM_READWRITE | G_PARAM_CONSTRUCT));
@@ -336,7 +339,7 @@ rb_source_class_init (RBSourceClass *klass)
 	g_object_class_install_property (object_class,
 					 PROP_BASE_QUERY_MODEL,
 					 g_param_spec_object ("base-query-model",
-						 	      "RhythmDBQueryModel",
+							      "RhythmDBQueryModel",
 							      "RhythmDBQueryModel object (unfiltered)",
 							      RHYTHMDB_TYPE_QUERY_MODEL,
 							      G_PARAM_READABLE));
@@ -348,7 +351,7 @@ rb_source_class_init (RBSourceClass *klass)
 	g_object_class_install_property (object_class,
 					 PROP_PLAY_ORDER,
 					 g_param_spec_object ("play-order",
-						 	      "play order",
+							      "play order",
 							      "optional play order specific to the source",
 							      RB_TYPE_PLAY_ORDER,
 							      G_PARAM_READABLE));
@@ -362,7 +365,7 @@ rb_source_class_init (RBSourceClass *klass)
 	g_object_class_install_property (object_class,
 					 PROP_SEARCH_TYPE,
 					 g_param_spec_enum ("search-type",
-						 	    "search-type",
+							    "search-type",
 							    "search type",
 							    RB_TYPE_SOURCE_SEARCH_TYPE,
 							    RB_SOURCE_SEARCH_NONE,
@@ -384,7 +387,7 @@ rb_source_class_init (RBSourceClass *klass)
 			      0);
 
 	/**
-	 * RBSource::status_changed:
+	 * RBSource::status-changed:
 	 * @source: the #RBSource
 	 *
 	 * Emitted when the source's status changes.
@@ -400,7 +403,7 @@ rb_source_class_init (RBSourceClass *klass)
 			      0);
 
 	/**
-	 * RBSource::filter_changed:
+	 * RBSource::filter-changed:
 	 * @source: the #RBSource
 	 *
 	 * Fires when the user changes the filter, either by changing the
@@ -543,8 +546,10 @@ queue_update_visibility (RBSource *source)
 /**
  * rb_source_set_hidden_when_empty:
  * @source: a #RBSource
- * @hidden: if TRUE, the source should not be displayed in
- *   the source list when there are no entries in it
+ * @hidden: if TRUE, automatically hide the source
+ *
+ * Enables or disables automatic hiding of the source when
+ * there are no entries in it.
  */
 void
 rb_source_set_hidden_when_empty (RBSource *source,
@@ -631,7 +636,7 @@ rb_source_set_property (GObject *object,
 		priv->source_group = g_value_get_boxed (value);
 		break;
 	case PROP_ENTRY_TYPE:
-		priv->entry_type = g_value_get_boxed (value);
+		priv->entry_type = g_value_get_object (value);
 		break;
 	case PROP_PLUGIN:
 		priv->plugin = g_value_get_object (value);
@@ -683,7 +688,7 @@ rb_source_get_property (GObject *object,
 		g_value_set_boxed (value, priv->source_group);
 		break;
 	case PROP_ENTRY_TYPE:
-		g_value_set_boxed (value, priv->entry_type);
+		g_value_set_object (value, priv->entry_type);
 		break;
 	case PROP_PLUGIN:
 		g_value_set_object (value, priv->plugin);
@@ -763,8 +768,9 @@ default_get_browser_key (RBSource *source)
  * rb_source_get_browser_key:
  * @source: a #RBSource
  *
- * Return value: the GConf key that determines browser visibility
- * for this source (allocated)
+ * Gets the GConf key controlling browser visibility
+ *
+ * Return value: the GConf key name (allocated)
  */
 char *
 rb_source_get_browser_key (RBSource *source)
@@ -777,6 +783,8 @@ rb_source_get_browser_key (RBSource *source)
 /**
  * rb_source_can_browse:
  * @source: a #RBSource
+ *
+ * Determines whether the source has a browser
  *
  * Return value: TRUE if this source has a browser
  */
@@ -874,6 +882,8 @@ rb_source_update_play_statistics (RBSource *source,
  * rb_source_get_entry_view:
  * @source: a #RBSource
  *
+ * Returns the entry view widget for the source.
+ *
  * Return value: the #RBEntryView instance for the source
  */
 RBEntryView *
@@ -894,8 +904,10 @@ default_get_property_views (RBSource *source)
  * rb_source_get_property_views:
  * @source: a #RBSource
  *
- * Return value:  a list containing the #RBPropertyView<!-- -->s that
- * make up the browser for this source, if any.
+ * Returns a list containing the #RBPropertyView instances for the
+ * source, if any.
+ *
+ * Return value:  list of property views
  */
 GList *
 rb_source_get_property_views (RBSource *source)
@@ -915,6 +927,8 @@ default_can_rename (RBSource *source)
  * rb_source_can_rename:
  * @source: a #RBSource.
  *
+ * Determines whether the source can be renamed.
+ *
  * Return value: TRUE if this source can be renamed
  */
 gboolean
@@ -933,7 +947,9 @@ rb_source_can_rename (RBSource *source)
 /**
  * rb_source_search:
  * @source: a #RBSource
- * @text: new search text
+ * @search: the active #RBSourceSearch instance (may be NULL)
+ * @cur_text: the current search text (may be NULL)
+ * @new_text: the new search text
  *
  * Updates the source with new search text.  The source
  * should recreate the database query that feeds into the
@@ -946,6 +962,7 @@ rb_source_search (RBSource *source,
 		  const char *new_text)
 {
 	RBSourceClass *klass = RB_SOURCE_GET_CLASS (source);
+	g_assert (new_text != NULL);
 
 	/* several sources don't have a search ability */
 	if (klass->impl_search != NULL)
@@ -980,8 +997,10 @@ rb_source_get_config_widget (RBSource *source,
  * rb_source_can_cut:
  * @source: a #RBSource
  *
- * Return value: TRUE if the source supports the typical cut
+ * Determines whether the source supporst the typical cut
  * (as in cut-and-paste) operation.
+ *
+ * Return value: TRUE if cutting is supported
  */
 gboolean
 rb_source_can_cut (RBSource *source)
@@ -995,8 +1014,9 @@ rb_source_can_cut (RBSource *source)
  * rb_source_can_paste:
  * @source: a #RBSource
  *
- * Return value: TRUE if the source supports the typical paste
- * (as in cut-and-paste) operation.
+ * Determines whether the source supports paste operations.
+ *
+ * Return value: TRUE if the pasting is supported
  */
 gboolean
 rb_source_can_paste (RBSource *source)
@@ -1010,8 +1030,10 @@ rb_source_can_paste (RBSource *source)
  * rb_source_can_delete:
  * @source: a #RBSource
  *
- * Return value: TRUE if the source allows the user to delete
+ * Determines whether the source allows the user to delete
  * a selected set of entries.
+ *
+ * Return value: TRUE if deletion is supported
  */
 gboolean
 rb_source_can_delete (RBSource *source)
@@ -1030,8 +1052,10 @@ rb_source_can_delete (RBSource *source)
  * rb_source_can_move_to_trash:
  * @source: a #RBSource
  *
- * Return value: TRUE if the source allows the user to trash
+ * Determines whether the source allows the user to trash
  * the files backing a selected set of entries.
+ *
+ * Return value: TRUE if trashing is supported
  */
 gboolean
 rb_source_can_move_to_trash (RBSource *source)
@@ -1050,8 +1074,10 @@ rb_source_can_move_to_trash (RBSource *source)
  * rb_source_can_copy:
  * @source: a #RBSource
  *
- * Return value: TRUE if the source supports the copy part
+ * Determines whether the source supports the copy part
  * of a copy-and-paste operation.
+ *
+ * Return value: TRUE if copying is supported
  */
 gboolean
 rb_source_can_copy (RBSource *source)
@@ -1082,12 +1108,19 @@ rb_source_cut (RBSource *source)
 static GList *
 default_copy (RBSource *source)
 {
-	return rb_entry_view_get_selected_entries (rb_source_get_entry_view (source));
+	RBEntryView *entry_view;
+	entry_view = rb_source_get_entry_view (source);
+	if (entry_view == NULL)
+		return NULL;
+
+	return rb_entry_view_get_selected_entries (entry_view);
 }
 
 /**
  * rb_source_copy:
  * @source: a #RBSource
+ *
+ * Copies the selected entries to the clipboard.
  *
  * Return value: a list containing the currently selected entries from
  * the source.
@@ -1106,22 +1139,32 @@ rb_source_copy (RBSource *source)
  * @entries: a list of #RhythmDBEntry objects to paste in
  *
  * Adds a list of entries previously cut or copied from another
- * source.
+ * source.  If the entries are not of the type used by the source,
+ * the entries will be copied and possibly converted into an acceptable format.
+ * This can be used for transfers to and from devices and network shares.
+ *
+ * If the transfer is performed using an #RBTrackTransferBatch, the batch object
+ * is returned so the caller can monitor the transfer progress.  The caller does not
+ * own a reference on the batch object.
+ *
+ * Return value: the #RBTrackTransferBatch used to perform the transfer (if any)
  */
-void
+RBTrackTransferBatch *
 rb_source_paste (RBSource *source, GList *entries)
 {
 	RBSourceClass *klass = RB_SOURCE_GET_CLASS (source);
 
-	klass->impl_paste (source, entries);
+	return klass->impl_paste (source, entries);
 }
 
 /**
  * rb_source_can_add_to_queue:
  * @source: a #RBSource
  *
- * Return value: TRUE if this source can add the current selected
- * set of entries to the play queue
+ * Determines whether the source can add the selected entries to
+ * the play queue.
+ *
+ * Return value: TRUE if adding to the play queue is supported
  */
 gboolean
 rb_source_can_add_to_queue (RBSource *source)
@@ -1134,10 +1177,15 @@ static void
 default_add_to_queue (RBSource *source,
 		      RBSource *queue)
 {
-	RBEntryView *songs = rb_source_get_entry_view (source);
-	GList *selection = rb_entry_view_get_selected_entries (songs);
+	RBEntryView *songs;
+	GList *selection;
 	GList *iter;
 
+	songs = rb_source_get_entry_view (source);
+	if (songs == NULL)
+		return;
+
+	selection = rb_entry_view_get_selected_entries (songs);
 	if (selection == NULL)
 		return;
 
@@ -1190,8 +1238,11 @@ default_move_to_trash (RBSource *source)
 
 	g_object_get (priv->shell, "db", &db, NULL);
 
+	sel = NULL;
 	entry_view = rb_source_get_entry_view (source);
-	sel = rb_entry_view_get_selected_entries (entry_view);
+	if (entry_view != NULL) {
+		sel = rb_entry_view_get_selected_entries (entry_view);
+	}
 
 	for (tem = sel; tem != NULL; tem = tem->next) {
 		rhythmdb_entry_move_to_trash (db, (RhythmDBEntry *)tem->data);
@@ -1243,8 +1294,10 @@ rb_source_reset_filters (RBSource *source)
  * rb_source_can_show_properties:
  * @source: a #RBSource
  *
- * Return value: TRUE if the source can display a properties
+ * Determines whether the source can display a properties
  * window for the currently selected entry (or set of entries)
+ *
+ * Return value: TRUE if showing properties is supported
  */
 gboolean
 rb_source_can_show_properties (RBSource *source)
@@ -1273,8 +1326,10 @@ rb_source_song_properties (RBSource *source)
  * rb_source_try_playlist:
  * @source: a #RBSource
  *
- * Return value: TRUE if the playback URIs for entries in the source
- *  should be parsed as playlists, rather than just played.
+ * Determines whether playback URIs for entries in the source should
+ * be parsed as playlists rather than just played.
+ *
+ * Return value: TRUE to attempt playlist parsing
  */
 gboolean
 rb_source_try_playlist (RBSource *source)
@@ -1332,26 +1387,35 @@ rb_source_uri_is_source (RBSource *source, const char *uri)
  * @uri: a URI to add
  * @title: theoretically, the title of the entity the URI points to
  * @genre: theoretically, the genre of the entity the URI points to
+ * @callback: a callback function to call when complete
+ * @data: data to pass to the callback
+ * @destroy_data: function to call to destroy the callback data
  *
  * Adds an entry corresponding to the URI to the source.  The
  * @title and @genre parameters are not really used.
- *
- * Return value: TRUE if the URI was successfully added to the source
  */
-gboolean
-rb_source_add_uri (RBSource *source, const char *uri, const char *title, const char *genre)
+void
+rb_source_add_uri (RBSource *source,
+		   const char *uri,
+		   const char *title,
+		   const char *genre,
+		   RBSourceAddCallback callback,
+		   gpointer data,
+		   GDestroyNotify destroy_data)
 {
 	RBSourceClass *klass = RB_SOURCE_GET_CLASS (source);
 	if (klass->impl_add_uri)
-		return klass->impl_add_uri (source, uri, title, genre);
-	return FALSE;
+		klass->impl_add_uri (source, uri, title, genre, callback, data, destroy_data);
 }
 
 /**
  * rb_source_can_pause:
  * @source: a #RBSource
  *
- * Return value: TRUE if playback of entries from the source can be paused.
+ * Determines whether playback of entries from the source can
+ * be paused.
+ *
+ * Return value: TRUE if pausing is supported
  */
 gboolean
 rb_source_can_pause (RBSource *source)
@@ -1377,7 +1441,10 @@ default_handle_eos (RBSource *source)
  * rb_source_handle_eos:
  * @source: a #RBSource
  *
- * Return value: how EOS events should be handled for entries from this source
+ * Determines how EOS events should be handled when playing entries
+ * from the source.
+ *
+ * Return value: EOS event handling type
  */
 RBSourceEOFType
 rb_source_handle_eos (RBSource *source)
@@ -1473,8 +1540,16 @@ void
 rb_source_delete_thyself (RBSource *source)
 {
 	RBSourceClass *klass;
+	RBSourcePrivate *priv;
 
 	g_return_if_fail (source != NULL);
+	priv = RB_SOURCE_GET_PRIVATE (source);
+	if (priv->deleted) {
+		rb_debug ("source has already been deleted");
+		return;
+	}
+	priv->deleted = TRUE;
+
 	klass = RB_SOURCE_GET_CLASS (source);
 	klass->impl_delete_thyself (source);
 	g_signal_emit (G_OBJECT (source), rb_source_signals[DELETED], 0);
@@ -1658,11 +1733,16 @@ GList *
 rb_source_gather_selected_properties (RBSource *source,
 				      RhythmDBPropType prop)
 {
+	RBEntryView *entryview;
 	GList *selected, *tem;
 	GHashTable *selected_set;
 
+	entryview = rb_source_get_entry_view (source);
+	if (entryview == NULL)
+		return NULL;
+
 	selected_set = g_hash_table_new (g_str_hash, g_str_equal);
-	selected = rb_entry_view_get_selected_entries (rb_source_get_entry_view (RB_SOURCE (source)));
+	selected = rb_entry_view_get_selected_entries (entryview);
 
 	for (tem = selected; tem; tem = tem->next) {
 		RhythmDBEntry *entry = tem->data;
@@ -1849,16 +1929,41 @@ _rb_action_group_add_source_actions (GtkActionGroup *group,
 gboolean
 _rb_source_check_entry_type (RBSource *source, RhythmDBEntry *entry)
 {
-	RhythmDBEntryType entry_type;
+	RhythmDBEntryType *entry_type;
 	gboolean ret = TRUE;
 
 	g_object_get (source, "entry-type", &entry_type, NULL);
-	if (entry_type != RHYTHMDB_ENTRY_TYPE_INVALID &&
-	    rhythmdb_entry_get_entry_type (entry) != entry_type) {
-		ret = FALSE;
+	if (entry_type != NULL) {
+		if (rhythmdb_entry_get_entry_type (entry) != entry_type) {
+			ret = FALSE;
+		}
+		g_object_unref (entry_type);
 	}
-	g_boxed_free (RHYTHMDB_TYPE_ENTRY_TYPE, entry_type);
 	return ret;
+}
+
+/**
+ * _rb_source_set_import_status:
+ * @source: an #RBSource
+ * @job: a #RhythmDBImportJob
+ * @progress_text: used to return progress text
+ * @progress: used to return progress fraction
+ *
+ * Used in implementations of the get_status method to provide source
+ * status information based on a #RhythmDBImportJob.
+ */
+void
+_rb_source_set_import_status (RBSource *source, RhythmDBImportJob *job, char **progress_text, float *progress)
+{
+	int total;
+	int imported;
+
+	total = rhythmdb_import_job_get_total (job);
+	imported = rhythmdb_import_job_get_imported (job);
+
+	g_free (*progress_text);
+	*progress_text = g_strdup_printf (_("Importing (%d/%d)"), imported, total);
+	*progress = ((float)imported / (float)total);
 }
 
 /* This should really be standard. */
@@ -1871,10 +1976,10 @@ rb_source_eof_type_get_type (void)
 
 	if (etype == 0)	{
 		static const GEnumValue values[] = {
-			ENUM_ENTRY (RB_SOURCE_EOF_ERROR, "Display error when playing entry ends"),
-			ENUM_ENTRY (RB_SOURCE_EOF_STOP, "Stop playback when playing entry ends"),
-			ENUM_ENTRY (RB_SOURCE_EOF_RETRY, "Restart playing when playing entry ends"),
-			ENUM_ENTRY (RB_SOURCE_EOF_NEXT, "Start next entry when playing entry ends"),
+			ENUM_ENTRY (RB_SOURCE_EOF_ERROR, "error"),
+			ENUM_ENTRY (RB_SOURCE_EOF_STOP, "stop"),
+			ENUM_ENTRY (RB_SOURCE_EOF_RETRY, "retry"),
+			ENUM_ENTRY (RB_SOURCE_EOF_NEXT, "next"),
 			{ 0, 0, 0 }
 		};
 
@@ -1891,9 +1996,9 @@ rb_source_search_type_get_type (void)
 
 	if (etype == 0) {
 		static const GEnumValue values[] = {
-			ENUM_ENTRY (RB_SOURCE_SEARCH_NONE, "No search capability"),
-			ENUM_ENTRY (RB_SOURCE_SEARCH_INCREMENTAL, "Immediate incremental search"),
-			ENUM_ENTRY (RB_SOURCE_SEARCH_EXPLICIT, "Explicitly activated search"),
+			ENUM_ENTRY (RB_SOURCE_SEARCH_NONE, "none"),
+			ENUM_ENTRY (RB_SOURCE_SEARCH_INCREMENTAL, "incremental"),
+			ENUM_ENTRY (RB_SOURCE_SEARCH_EXPLICIT, "explicit"),
 			{ 0, 0, 0 }
 		};
 

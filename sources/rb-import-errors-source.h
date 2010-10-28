@@ -28,9 +28,9 @@
 #ifndef __RB_IMPORT_ERRORS_SOURCE_H
 #define __RB_IMPORT_ERRORS_SOURCE_H
 
-#include "rb-shell.h"
-#include "rb-source.h"
-#include "rhythmdb.h"
+#include <shell/rb-shell.h>
+#include <sources/rb-source.h>
+#include <rhythmdb/rhythmdb.h>
 
 G_BEGIN_DECLS
 
@@ -60,7 +60,9 @@ struct _RBImportErrorsSourceClass
 GType		rb_import_errors_source_get_type		(void);
 
 RBSource *      rb_import_errors_source_new			(RBShell *shell,
-								 RhythmDBEntryType entry_type);
+								 RhythmDBEntryType *entry_type,
+								 RhythmDBEntryType *normal_entry_type,
+								 RhythmDBEntryType *ignore_entry_type);
 
 G_END_DECLS
 

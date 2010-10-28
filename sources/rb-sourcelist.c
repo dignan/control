@@ -132,10 +132,8 @@ static void
 rb_sourcelist_class_init (RBSourceListClass *class)
 {
 	GObjectClass   *o_class;
-	GtkObjectClass *object_class;
 
 	o_class = (GObjectClass *) class;
-	object_class = (GtkObjectClass *) class;
 
 	o_class->constructed = rb_sourcelist_constructed;
 	o_class->finalize = rb_sourcelist_finalize;
@@ -176,7 +174,7 @@ rb_sourcelist_class_init (RBSourceListClass *class)
 	 */
 	rb_sourcelist_signals[SELECTED] =
 		g_signal_new ("selected",
-			      G_OBJECT_CLASS_TYPE (object_class),
+			      G_OBJECT_CLASS_TYPE (class),
 			      G_SIGNAL_RUN_LAST,
 			      G_STRUCT_OFFSET (RBSourceListClass, selected),
 			      NULL, NULL,
@@ -195,7 +193,7 @@ rb_sourcelist_class_init (RBSourceListClass *class)
 	 */
 	rb_sourcelist_signals[DROP_RECEIVED] =
 		g_signal_new ("drop_received",
-			      G_OBJECT_CLASS_TYPE (object_class),
+			      G_OBJECT_CLASS_TYPE (class),
 			      G_SIGNAL_RUN_LAST,
 			      G_STRUCT_OFFSET (RBSourceListClass, drop_received),
 			      NULL, NULL,
@@ -214,7 +212,7 @@ rb_sourcelist_class_init (RBSourceListClass *class)
 	 */
 	rb_sourcelist_signals[SOURCE_ACTIVATED] =
 		g_signal_new ("source_activated",
-			      G_OBJECT_CLASS_TYPE (object_class),
+			      G_OBJECT_CLASS_TYPE (class),
 			      G_SIGNAL_RUN_LAST,
 			      G_STRUCT_OFFSET (RBSourceListClass, source_activated),
 			      NULL, NULL,
@@ -233,7 +231,7 @@ rb_sourcelist_class_init (RBSourceListClass *class)
 	 */
 	rb_sourcelist_signals[SHOW_POPUP] =
 		g_signal_new ("show_popup",
-			      G_OBJECT_CLASS_TYPE (object_class),
+			      G_OBJECT_CLASS_TYPE (class),
 			      G_SIGNAL_RUN_LAST,
 			      G_STRUCT_OFFSET (RBSourceListClass, show_popup),
 			      NULL, NULL,
@@ -674,9 +672,10 @@ rb_sourcelist_init (RBSourceList *sourcelist)
 	g_object_set (sourcelist->priv->treeview,
 		      "headers-visible", FALSE,
 		      "reorderable", TRUE,
+		      "enable-search", TRUE,
+		      "search-column", RB_SOURCELIST_MODEL_COLUMN_NAME,
 		      NULL);
 
-	gtk_tree_view_set_enable_search (GTK_TREE_VIEW (sourcelist->priv->treeview), FALSE);
 	rb_sourcelist_model_set_dnd_targets (RB_SOURCELIST_MODEL (sourcelist->priv->filter_model),
 					     GTK_TREE_VIEW (sourcelist->priv->treeview));
 
@@ -770,19 +769,7 @@ rb_sourcelist_init (RBSourceList *sourcelist)
 						 NULL);
 	g_signal_connect_object (renderer, "edited", G_CALLBACK (source_name_edited_cb), sourcelist, 0);
 
-	if (g_object_class_find_property (G_OBJECT_GET_CLASS (sourcelist->priv->treeview), "show-expanders") != NULL) {
-		g_object_set (sourcelist->priv->treeview, "show-expanders", FALSE, NULL);
-	} else {
-		/* Hidden column for the normal treeview expander (gtk 2.8 compatibility) */
-		GtkTreeViewColumn *hidden;
-
-		hidden = gtk_tree_view_column_new ();
-
-		g_object_set (hidden, "visible", FALSE, NULL);
-
-		gtk_tree_view_append_column (GTK_TREE_VIEW (sourcelist->priv->treeview), hidden);
-		gtk_tree_view_set_expander_column (GTK_TREE_VIEW (sourcelist->priv->treeview), hidden);
-	}
+	g_object_set (sourcelist->priv->treeview, "show-expanders", FALSE, NULL);
 
 	/* Expander */
 	renderer = gossip_cell_renderer_expander_new ();
@@ -855,6 +842,8 @@ rb_sourcelist_get_property (GObject    *object,
 /**
  * rb_sourcelist_new:
  * @shell: the #RBShell instance
+ *
+ * Creates the source list widget.
  *
  * Return value: the source list widget.
  */

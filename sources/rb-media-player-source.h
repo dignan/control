@@ -1,6 +1,4 @@
 /*
- *  arch-tag: Header for the Media Player Source object
- *
  *  Copyright (C) 2009 Paul Bellamy  <paul.a.bellamy@gmail.com>
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -32,9 +30,9 @@
 
 #include <glib.h>
 
-#include "rb-shell.h"
-#include "rb-removable-media-source.h"
-#include "rhythmdb.h"
+#include <shell/rb-shell.h>
+#include <sources/rb-removable-media-source.h>
+#include <rhythmdb/rhythmdb.h>
 
 G_BEGIN_DECLS
 
@@ -60,14 +58,42 @@ struct _RBMediaPlayerSourceClass
 	RBRemovableMediaSourceClass parent_class;
 
 	/* class members */
+	void		(*impl_get_entries)	(RBMediaPlayerSource *source, const char *category, GHashTable *map);
 	guint64		(*impl_get_capacity)	(RBMediaPlayerSource *source);
 	guint64		(*impl_get_free_space)	(RBMediaPlayerSource *source);
+	void		(*impl_delete_entries)	(RBMediaPlayerSource *source,
+						 GList *entries,
+						 RBMediaPlayerSourceDeleteCallback callback,
+						 gpointer data,
+						 GDestroyNotify destroy_data);
+	void		(*impl_add_playlist)	(RBMediaPlayerSource *source, gchar *name, GList *entries);
+	void		(*impl_remove_playlists) (RBMediaPlayerSource *source);
 	void		(*impl_show_properties)	(RBMediaPlayerSource *source, GtkWidget *info_box, GtkWidget *notebook);
 };
 
 GType	rb_media_player_source_get_type	(void);
 
+void	rb_media_player_source_init_actions	(RBShell *shell);
+
+void	rb_media_player_source_load		(RBMediaPlayerSource *source);
+
+guint64 rb_media_player_source_get_capacity	(RBMediaPlayerSource *source);
+guint64 rb_media_player_source_get_free_space	(RBMediaPlayerSource *source);
+void	rb_media_player_source_get_entries	(RBMediaPlayerSource *source,
+						 const char *category,	/* defined in rb-sync-settings.h */
+						 GHashTable *entries);
+
+void	rb_media_player_source_delete_entries	(RBMediaPlayerSource *source,
+						 GList *entries,
+						 RBMediaPlayerSourceDeleteCallback callback,
+						 gpointer user_data,
+						 GDestroyNotify destroy_data);
+
 void	rb_media_player_source_show_properties (RBMediaPlayerSource *source);
+
+void	rb_media_player_source_sync (RBMediaPlayerSource *source);
+
+void	_rb_media_player_source_add_to_map 	(GHashTable *device_map, RhythmDBEntry *entry);
 
 G_END_DECLS
 

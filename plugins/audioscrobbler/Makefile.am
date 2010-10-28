@@ -7,18 +7,29 @@ libaudioscrobbler_la_SOURCES = \
 	rb-audioscrobbler-plugin.c			\
 	rb-audioscrobbler-entry.h			\
 	rb-audioscrobbler-entry.c			\
+	rb-audioscrobbler-profile-source.h		\
+	rb-audioscrobbler-profile-source.c		\
+	rb-audioscrobbler-account.h			\
+	rb-audioscrobbler-account.c			\
+	rb-audioscrobbler-service.h			\
+	rb-audioscrobbler-service.c			\
+	rb-audioscrobbler-user.h			\
+	rb-audioscrobbler-user.c			\
 	rb-audioscrobbler.c				\
 	rb-audioscrobbler.h				\
-	rb-lastfm-source.c				\
-	rb-lastfm-source.h				\
-	rb-lastfm-play-order.c				\
-	rb-lastfm-play-order.h
+	rb-audioscrobbler-radio-source.c		\
+	rb-audioscrobbler-radio-source.h		\
+	rb-audioscrobbler-radio-track-entry-type.h	\
+	rb-audioscrobbler-radio-track-entry-type.c	\
+	rb-audioscrobbler-play-order.c			\
+	rb-audioscrobbler-play-order.h
 
 libaudioscrobbler_la_LDFLAGS = $(PLUGIN_LIBTOOL_FLAGS)
 libaudioscrobbler_la_LIBTOOLFLAGS = --tag=disable-static
 libaudioscrobbler_la_LIBADD = 				\
 	$(top_builddir)/shell/librhythmbox-core.la	\
 	$(TOTEM_PLPARSER_LIBS)				\
+	$(JSON_GLIB_LIBS)				\
 	$(RHYTHMBOX_LIBS)
 
 INCLUDES = 						\
@@ -39,14 +50,20 @@ INCLUDES = 						\
 	-DSHARE_DIR=\"$(pkgdatadir)\"                   \
 	-DDATADIR=\""$(datadir)"\"			\
 	$(TOTEM_PLPARSER_CFLAGS)			\
+	$(JSON_GLIB_CFLAGS)				\
 	$(RHYTHMBOX_CFLAGS)				\
 	-D_XOPEN_SOURCE -D_BSD_SOURCE
 
 gtkbuilderdir = $(plugindir)
-gtkbuilder_DATA = audioscrobbler-prefs.ui
+gtkbuilder_DATA =					\
+	audioscrobbler-preferences.ui			\
+	audioscrobbler-profile.ui
 
 uixmldir = $(plugindir)
-uixml_DATA = audioscrobbler-ui.xml
+uixml_DATA =						\
+	audioscrobbler-profile-ui.xml			\
+	audioscrobbler-radio-ui.xml
+
 
 plugin_in_files = audioscrobbler.rb-plugin.in
 
@@ -58,14 +75,16 @@ BUILT_SOURCES =							\
 
 plugin_DATA = 					\
 	$(BUILT_SOURCES)			\
-	$(top_srcdir)/plugins/audioscrobbler/as-icon.png		\
+	$(top_srcdir)/plugins/audioscrobbler/Last.fm-icon.png	\
+	$(top_srcdir)/plugins/audioscrobbler/Libre.fm-icon.png	\
 	$(NULL)
 
 EXTRA_DIST = 					\
 	$(plugin_in_files)			\
 	$(uixml_DATA)				\
 	$(gtkbuilder_DATA)			\
-	$(top_srcdir)/plugins/audioscrobbler/as-icon.png		\
+	$(top_srcdir)/plugins/audioscrobbler/Last.fm-icon.png		\
+	$(top_srcdir)/plugins/audioscrobbler/Libre.fm-icon.png		\
 	$(top_srcdir)/plugins/audioscrobbler/as-powered.png		\
 	$(NULL)
 

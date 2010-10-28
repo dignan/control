@@ -1,3 +1,357 @@
+Overview of changes in Rhythmbox 0.13.1  "So Tired"
+===================================================
+
+* Support for MPRIS version 2
+* RhythmDBEntryType converted to a GObject to improve binding sanity
+* Improved handling of files on unmounted devices and network shares
+  - Only attempts to check files on core filesystems and mounted local
+    devices
+  - Doesn't check files on network shares, relying on playback error
+    reporting to identify missing files
+* New less annoying method of handling invocation for media player devices
+* rhythmbox-client now waits long enough to control a newly started instance
+* More reliably imports and plays files specified on the command line
+  (opening a file with nautilus will now do something useful most of the time)
+* Use the current sorting column for typeahead searching
+* Extended (static) vala bindings
+* Initial implementation of the Rygel MediaServer2 D-Bus specification
+
+Bugs fixed:
+
+329984 - Type-ahead should work for any visible column
+482813 - rhythmbox-client --enqueue doesn't work if uri not in library
+488308 - blocks for 25s after volume key press sometimes
+498582 - rhythmbox-client --enqueue won't cope with equals sign
+544154 - RB to realize unmounted remote libraries
+581076 - expansion of Vala bindings coverage
+609542 - Signal for announcing end of "startup" phase i.e. scanning sources
+623024 - Sync mp3 songs with MTP device failed
+623153 - Different pop-up menu layout in playlists creation
+623667 - Album Art not working - MTP
+623992 - Compile errors in rhythmbox 0.13
+624646 - New Default Rhythmbox Radio Stations
+624895 - Rhythmbox fails to compile with libdmapsharing 2.0, DAAP plugin fails to enable.
+625103 - gst encoder must strdup media_type
+625105 - Sync state UI cannot show media disk usage >4GB on 32-bit OS
+625124 - Improve RBEncoder and RBTrackTransferBatch error handling
+625130 - Change encoding filter order
+625375 - Crash in process_tag at rb-player-gst.c line 204
+626608 - Add support for seek in rhythmbox-client
+626986 - Please fix escaping of UTF-chars in ui file
+627050 - metadata crawler aborts when files are modified
+627396 - Switch to full-screen or leave full-screen visualization by double clicking the visualization canvas
+627949 - IM Status plugin crashing with AttributeError: 'rhythmdb.EntryType' object has no attribute 'category'
+627951 - crash on closing with g_hash_table_iter_init
+628076 - Rhythmbox crashes on startup
+628254 - segfault: trying to change properties of a song
+
+Code contributors:
+
+Andrea Del Signore
+Bastien Nocera
+Brian Cameron
+Daniel Hams
+Gabor Kelemen
+Jonathan Matthew
+Karl Ljungkvist
+Philipp Kerling
+Scott J. Goldman
+Wladimir Leuschner
+Zeeshan Ali (Khattak)
+
+
+New and updated translations:
+
+- cs, courtesy of Marek Černocký
+- de, courtesy of Mario Blättermann
+- en_GB, courtesy of Bruce Cowan
+- eo, courtesy of Kristjan SCHMIDT
+- es, courtesy of Jorge González
+- et, courtesy of Mattias Põldaru
+- fr, courtesy of Claude Paroz
+- gl, courtesy of Fran Dieguez
+- hu, courtesy of Gabor Kelemen
+- ja, courtesy of Kiyotaka NISHIBORI
+- nb, courtesy of Kjartan Maraas
+- nn, courtesy of Åsmund Skjæveland
+- pl, courtesy of Piotr Drąg
+- pt_BR, courtesy of Djavan Fagundes
+- pt, courtesy of Filipe Gomes
+- ru, courtesy of Yuri Myasoedov
+- sl, courtesy of Andrej Žnidaršič
+- sr, courtesy of Милош Поповић
+- sr@latin, courtesy of Miloš Popović
+- sv, courtesy of Daniel Nylander
+- zh_CN, courtesy of YunQiang Su
+
+
+Overview of changes in Rhythmbox 0.13.0  "Albatross"
+====================================================
+
+* Improved GStreamer codec installation (Jonathan Matthew)
+* New metadata fields: comment (Josh Green), BPM (Mattias Eriksson),
+  Album artist (JM)
+* MMS and RTSP streams should work properly now (Robert Ancell)
+* Always visible on startup when started manually (JM)
+* New implementation of the MPRIS D-Bus interface spec (JM)
+* Creates nested folders on MTP devices (JM)
+* Installs header, VAPI and pkg-config files for external plugins (JM)
+* DAAP plugin now uses libdmapsharing (W. Michael Petullo)
+* Library, playlist and podcast syncing for media players (based on Paul
+   Bellamy's Summer of Code project)
+* Fixed interaction with Brasero for CD burning (Philippe Rouquier)
+* New application icon (Lapo Calamandrei)
+* Displays HTML podcast episode descriptions using WebKit (JM)
+* Updates for Magnatune's new purchase process (Adam Zimmerman)
+
+Bugs fixed:
+
+310774 - Music player sync
+320507 - Deal with HTML in Podcast Descriptions
+324845 - Podcast syncing
+341702 - Clobbers empty/nonexistent tags
+404698 - Track transfer fails with "failed to find acceptable mime type"
+454889 - Support for the BPM tag
+457088 - track transfer on out of space messages stack up
+501554 - generic audio player synchronization support
+520046 - copying files to full iPod leaves 0-byte files scattered on the device
+525094 - Grab lyrics from darklyrics.com
+527898 - Assertion in rhythmdb_property_model_delete_prop()
+530775 - Crossfade backend can't play Real Audio streams
+537868 - Restore window when rhythmbox is closed from tray icon
+538240 - Progress bar while copying to storage media is non-sensical
+559849 - Human friendly names instead of language codes
+560940 - support "Comment" id3 tag in rhythmbox
+566852 - Move DAAP code to use common libdmapsharing
+581885 - rhythmbox can't play mms radio
+592470 - "Do you want to overwrite..." dialogue box lacks yes/no to all and cancel buttons
+593641 - Folder support for MTP-Devices
+593968 - problematic way of asking to skip files on copy
+595425 - Use accessor functions instead direct access (use GSEAL GnomeGoal)
+596615 - Use a single HTTP connection for podcast downloads where possible
+612714 - IM Status plugin does not reset status message on end playback
+612867 - Automatic playlists editor is missing "does not equal" in Rating criterions
+612942 - After one error in radio streaming, rhythmbox fails with all radios channels.
+613526 - Crash due to MTP device disappearing immediately after access
+613941 - genre tab displays numbers in magnatune catalogue instead of genre names
+614084 - Translatable string fixes
+614139 - New icon
+614184 - No python binding for rhythmdb_query_model_copy_contents
+614351 - Crash due to playing stream signal emitted on non-main thread
+616411 - crash when transferring files with no extension
+616636 - use g_ascii_strtod to read the db version
+617157 - use g_strcmp0 when checking properties in song info widget
+617587 - fix python initialization code for python 2.6.6
+618025 - Add KWUR to initial internet radio station playlist
+618520 - implement MPRIS dbus spec
+619247 - TerraParser does not catch all HTML entities
+619576 - Brasero does not remove temporary projects because of G_SPAWN_FILE_AND_ARGV_ZERO in the plugin
+619677 - Expose file grabbing functions to python plugins
+619907 - Add more bindings for Vala
+619925 - Add translator comment for "Volume usage"
+620069 - add python bindings for the rating widget
+620199 - fails to build: "pause" already used by eglibc <unistd.h>
+620256 - RBSource has no default implementation for rb_source_can_pause
+620857 - Support detection of files in the library being renamed/moved while rhythmbox is running
+621434 - Source code typo in sources/rb-library-source.c
+622215 - [Patch] Allow building rhythmbox with gtk+ 2.21.1 or newer
+622613 - segfault in rb_player_gst_xfade_bus_cb
+622723 - Sync string is used in two different contexts
+622753 - segfault in rhythmdb_add_import_error_entry
+
+New and updated translations:
+
+- bg, courtesy of Krasimir Chonov
+- cs, courtesy of Marek Černocký
+- da, courtesy of Ask Hjorth Larsen
+- de, courtesy of Mario Blättermann
+- el, courtesy of Simos Xenitellis
+- es, courtesy of Jorge González
+- et, courtesy of Mattias Põldaru
+- fr, courtesy of Claude Paroz
+- gl, courtesy of Fran Diéguez
+- hi, courtesy of karthik
+- hu, courtesy of Gabor Kelemen
+- it, courtesy of Luca Ferretti
+- ko, courtesy of Kang Bundo
+- lt, courtesy of Aurimas Černius
+- pa, courtesy of A S Alam
+- pl, courtesy of Piotr Drąg
+- pt_BR, courtesy of Daniel S. Koda
+- sl, courtesy of Andrej Žnidaršič
+- sr, courtesy of Милош Поповић
+- sr@latin, courtesy of Miloš Popović
+- th, courtesy of Theppitak Karoonboonyanan
+- uk, courtesy of Sergiy Gavrylov
+- zh_CN, courtesy of Funda Wang
+
+
+Overview of changes in Rhythmbox 0.12.8  "Extradition"
+======================================================
+
+* Last.fm cover art search (Jonathan Matthew)
+* Automatically unmount MTP devices mounted by gvfs (François Jaouen)
+* More improvements to mixed-direction text display (Uri Sivan)
+
+Bugs fixed:
+
+482955 - rhythmbox crashed with SIGSEGV in rb_source_try_playlist()
+520121 - MTP plugin fights with gvfs' gphoto2 backend
+527898 - Assertion in rhythmdb_property_model_delete_prop()
+528513 - have to run rhythmbox twice to see the main window
+551402 - Cannot update list of episodes in podcasts
+600494 - crash in Rhythmbox Music Player: (something to do with CD playback)
+603261 - rhythmbox crashes during drag n drop of mp3 to iPod
+607073 - rhythmbox crashed with SIGSEGV in rb_entry_view_scroll_to_entry()
+609651 - Album Artwork Does Not Display Immediately For Embedded Artwork
+610753 - Fix mixed-direction text in header widget
+611541 - OGG files with skeleton stream are not imported
+611714 - missing stock icons
+611772 - Menubar: "show statusbar" menu entry doesn't get sync properly
+612570 - rhythmbox crashed with SIGSEGV in g_closure_invoke()
+613163 - Add a11y name to the status icon
+613540 - [cppcheck] found a memory leak in /rhythmbox/plugins/mtpdevice/rb-mtp-source.c
+613542 - [cppcheck] found a resource leak in rhythmbox/plugins/cd-recorder/rb-recorder-gst.
+613606 - Don't load AFC devices using the MTP plugin
+613658 - null string checking in RBSource_do_impl_search python binding
+613715 - Rhythmbox crashes when iPhone is plugged in and MTP plugin is enabled
+613784 - Reloads deleted podcasts
+
+New and updated translations:
+
+- af, courtesy of F Wolff
+- bg, courtesy of Krasimir Chonov
+- br, courtesy of Jérémy AR FLOC'H
+- cs, courtesy of Lucas Lommer
+- cs, courtesy of Marek Černocký
+- de, courtesy of Christian Kirbach
+- el, courtesy of Simos Xenitellis
+- es, courtesy of Jorge González
+- et, courtesy of Mattias Põldaru
+- eu, courtesy of Iñaki Larrañaga Murgoitio
+- fi, courtesy of Jiri Grönroos
+- fr, courtesy of Pierre-Luc Beaudoin
+- gl, courtesy of Fran Diéguez
+- hu, courtesy of Gabor Kelemen
+- it, courtesy of Luca Ferretti
+- ja, courtesy of Hajime Taira
+- lt, courtesy of Žygimantas Beručka
+- nb, courtesy of Kjartan Maraas
+- pl, courtesy of Piotr Drąg
+- pt_BR, courtesy of Rodrigo Flores
+- pt, courtesy of Filipe Gomes
+- ro, courtesy of Adi Roiban
+- ru, courtesy of Yuri Kozlov
+- sl, courtesy of Andrej Žnidaršič
+- sv, courtesy of Daniel Nylander
+- uk, courtesy of Sergiy Gavrylov
+
+
+Overview of changes in Rhythmbox 0.12.7  "It's a Hectic World"
+==============================================================
+
+* New ReplayGain plugin, replacing the old broken ReplayGain code (Jonathan Matthew)
+* Nautilus-sendto plugin (Filipp Ivanov)
+* Support for Magnatune streaming and download accounts (Adam Zimmerman)
+* Support for pidgin in the IM status plugin (Mohamad Elrashidin Sajeli)
+* Context pane plugin now uses the GTK+ font settings (JM)
+* Support for artist and album sort names (Jamie Nicol)
+* Now depends on GTK+ 2.16, GLib 2.18, and pygobject 2.16
+  (no more libgnome, libgnomeui, gnome-vfs, or libsexy code anywhere)
+* As GSEAL-ready as we can make it for now (Javier Jardón)
+* Compatible with the new totem-plparser save API (Carlos Garnacho)
+* Disentangled 'delete', 'remove', and 'remove from playlist' actions (JM)
+* Improvements to display of mixed-direction text (Uri Sivan)
+* Simplified selection of audio CD tracks to extract (JM)
+* Playlist creation should work on more generic player devices now (JM)
+
+Bugs fixed:
+
+133444 - Use album and artist sort names ("Sort band list without 'The'")
+316257 - forward / back mouse buttons should trigger next / previous songs
+338221 - Rhythmbox ignores replaygain tags in DAAP streamed media
+378355 - Magnatune plugin should not print CC# in debug output
+384483 - Open cover in Image Viewer
+424878 - The play button's tool tip "Stop playback" is misleading
+485730 - Better labels for remove/move to trash
+518540 - RTL Song title displayed on wrong side of other track info.
+533727 - Support new Magnatune accounts
+537483 - should be possible to import only selected audio cd songs
+542055 - Sort order is not localized
+547174 - Separate the filesystem scanning from the metadata content reading
+559582 - Cleanups for -DG_DISABLE_DEPRECATED
+564800 - GnomeGoals: Remove deprecated GTK+ symbols (again)
+584593 - sample-vala plugin does not build
+584704 - External MP3 players should delete files rether than move to trash
+593188 - Manpages for rhythmbox and rhythmbox-client
+594132 - python binding lacks enum RBMetaDataField
+595795 - Portugu?s Lyrics - Patch to grab lyrics from letras.terra.com.br
+601524 - Slider jumps around at the end of songs
+602015 - Default 'label1' naming of the first Multiple Song info window
+602140 - thread-related segfault in context panel plugin
+602615 - fails to build if ld's --no-add-needed is used
+602616 - strings being URI-unescaped twice in song info window
+602679 - context: encode album names received from last.fm in utf8
+603258 - mpid: don't destroy HAL context twice
+603263 - compilation errors because of wrong g_print format
+603444 - ignore hidden files while enumerating directories
+603876 - LyricWiki should be deleted from the "Song lyrics" plugin
+603929 - Rhythmbox unnecessarily modifying sound files
+604186 - Remove gnome-vfs use in plugins
+604188 - [upnp] Use GIO to get the face icon's mime-type
+604189 - [artdisplay] Simplify save_pixbuf code
+604292 - Use g_atomic_int_* when possible to handle refcounts
+604771 - Adding context to some strings
+605023 - IM Status Plugin patch for Pidgin support
+605038 - Seg Fault When Going to Play List; Visualisation; Browse
+605031 - add "Send to..." button to right click on the song
+605313 - Use totem_pl_parser_save()
+605583 - segfault if MTP device open fails
+605584 - Race condition in MTP causes devices to fail to open
+605725 - [context] doesn't use gtk font settings
+606470 - Wrong title for MTP properties dialog
+606472 - Bad alignment for labes in media player properties dialog
+607263 - Playlist creation ignores playlist_format from .is_audio_player
+607265 - M3U playlist is missing #EXTINF info
+607538 - incorrect description for toolbar_style gconf key
+607672 - Podcasts default to rating 3*
+607897 - fix build with warnings=all
+607935 - Crashes with SIGSEGV when trying to enable visualization
+608397 - Rhythmbox does not create working playlists for Sansa Clip+
+609306 - Changing between two sources without query models causes warnings
+609767 - RTL tags in status icon bubble
+609908 - compare track number when checking if tracks already exist on devices
+609916 - CBC Radio 1 & 2 Live Feeds don't work
+610440 - The user agent string must be used when connecting to DAAP shares
+610643 - Fix linkage against librhythmdb.la
+610655 - [patch] enum type mismatch
+610657 - [patch] Linking fails due to multiple definition of _PyGObject_API, etc.
+
+New and updated translations:
+bg, courtesy of Krasimir Chonov
+cs, courtesy of Marek Černocký
+de, courtesy of Mario Blättermann
+el, courtesy of Thanos Lefteris
+en_GB, courtesy of Bruce Cowan
+es, courtesy of Jorge González
+et, courtesy of Mattias Põldaru
+fr, courtesy of Claude Paroz
+gl, courtesy of Fran Diéguez
+hu, courtesy of Gabor Kelemen
+it, courtesy of Luca Ferretti
+lt, courtesy of Žygimantas Beručka
+lv, courtesy of Peteris Krisjanis
+pl, courtesy of Tomasz Dominikowski
+pt_BR, courtesy of Rodrigo Flores
+ro, courtesy of Adi Roiban
+sl, courtesy of Andrej Žnidaršič
+sr, courtesy of Милош Поповић
+sr@latin, courtesy of Miloš Popović
+sv, courtesy of Daniel Nylander
+uk, courtesy of Sergiy Gavrylov
+uk, courtesy of Сергій Гаврилов
+
+
 Overview of changes in Rhythmbox 0.12.6  "Range Life"
 =====================================================
 

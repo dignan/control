@@ -51,13 +51,15 @@
 #include "rb-daap-source.h"
 #include "rb-daap-sharing.h"
 #include "rb-daap-src.h"
+#include "rb-dacp-source.h"
 #include "rb-uri-dialog.h"
 
-#include "rb-daap-mdns-browser.h"
+#include <libdmapsharing/dmap.h>
 
 /* preferences */
 #define CONF_DAAP_PREFIX  	CONF_PREFIX "/plugins/daap"
 #define CONF_ENABLE_BROWSING 	CONF_DAAP_PREFIX "/enable_browsing"
+#define CONF_ENABLE_REMOTE	CONF_DAAP_PREFIX "/enable_remote"
 
 #define DAAP_DBUS_PATH	"/org/gnome/Rhythmbox/DAAP"
 
@@ -74,11 +76,14 @@ struct RBDaapPluginPrivate
 	GtkActionGroup *daap_action_group;
 	guint daap_ui_merge_id;
 
-	RBDaapMdnsBrowser *mdns_browser;
+	DMAPMdnsBrowser *mdns_browser;
+
+	DACPShare *dacp_share;
 
 	GHashTable *source_lookup;
 
 	guint enable_browsing_notify_id;
+	guint enable_remote_notify_id;
 
 	GdkPixbuf *daap_share_pixbuf;
 	GdkPixbuf *daap_share_locked_pixbuf;
@@ -87,7 +92,8 @@ struct RBDaapPluginPrivate
 enum
 {
 	PROP_0,
-	PROP_SHUTDOWN
+	PROP_SHUTDOWN,
+	PROP_SHELL
 };
 
 G_MODULE_EXPORT GType register_rb_plugin (GTypeModule *module);
@@ -113,6 +119,14 @@ static void enable_browsing_changed_cb (GConfClient *client,
 					guint cnxn_id,
 					GConfEntry *entry,
 					RBDaapPlugin *plugin);
+static void enable_remote_changed_cb (GConfClient *client,
+					guint cnxn_id,
+					GConfEntry *entry,
+					RBDaapPlugin *plugin);
+static void libdmapsharing_debug (const char *domain,
+				  GLogLevelFlags level,
+				  const char *message,
+				  gpointer data);
 
 gboolean rb_daap_add_source (RBDaapPlugin *plugin, gchar *service_name, gchar *host, unsigned int port, GError **error);
 gboolean rb_daap_remove_source (RBDaapPlugin *plugin, gchar *service_name, GError **error);
@@ -154,6 +168,14 @@ rb_daap_plugin_class_init (RBDaapPluginClass *klass)
 							       "Whether the DAAP plugin has been shut down",
 							       FALSE,
 							       G_PARAM_READABLE));
+
+	g_object_class_install_property (object_class,
+	                                 PROP_SHELL,
+	                                 g_param_spec_object ("shell",
+	                                                      "Shell",
+	                                                      "The Rhythmbox Shell",
+	                                                      RB_TYPE_SHELL,
+	                                                      G_PARAM_READABLE));
 
 	g_type_class_add_private (object_class, sizeof (RBDaapPluginPrivate));
 }
@@ -200,6 +222,9 @@ rb_daap_plugin_get_property (GObject *object,
 	case PROP_SHUTDOWN:
 		g_value_set_boolean (value, plugin->priv->shutdown);
 		break;
+	case PROP_SHELL:
+		g_value_take_object (value, plugin->priv->shell);
+		break;
 	default:
 		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
 		break;
@@ -213,6 +238,7 @@ impl_activate (RBPlugin *bplugin,
 	RBDaapPlugin *plugin = RB_DAAP_PLUGIN (bplugin);
 	gboolean no_registration;
 	gboolean enabled = TRUE;
+	gboolean remote_enabled = TRUE;
 	GConfValue *value;
 	GConfClient *client = eel_gconf_client_get_global ();
 	GtkUIManager *uimanager = NULL;
@@ -222,6 +248,11 @@ impl_activate (RBPlugin *bplugin,
 
 	plugin->priv->shutdown = FALSE;
 	plugin->priv->shell = g_object_ref (shell);
+
+	g_log_set_handler ("libdmapsharing",
+			    G_LOG_LEVEL_MASK,
+			    libdmapsharing_debug,
+			    NULL);
 
 	value = gconf_client_get_without_default (client,
 						  CONF_ENABLE_BROWSING, NULL);
@@ -237,6 +268,24 @@ impl_activate (RBPlugin *bplugin,
 	plugin->priv->enable_browsing_notify_id =
 		eel_gconf_notification_add (CONF_ENABLE_BROWSING,
 					    (GConfClientNotifyFunc) enable_browsing_changed_cb,
+					    plugin);
+
+	/* Check if Remote (DACP) lookup is enabled */
+	value = gconf_client_get_without_default (client,
+						  CONF_ENABLE_REMOTE, NULL);
+	if (value != NULL) {
+		remote_enabled = gconf_value_get_bool (value);
+		gconf_value_free (value);
+	}
+
+	plugin->priv->dacp_share = rb_daap_create_dacp_share (RB_PLUGIN (plugin));
+	if (remote_enabled) {
+		dacp_share_start_lookup (plugin->priv->dacp_share);
+	}
+
+	plugin->priv->enable_remote_notify_id =
+		eel_gconf_notification_add (CONF_ENABLE_REMOTE,
+					    (GConfClientNotifyFunc) enable_remote_changed_cb,
 					    plugin);
 
 	create_pixbufs (plugin);
@@ -317,6 +366,13 @@ impl_deactivate	(RBPlugin *bplugin,
 	if (plugin->priv->enable_browsing_notify_id != EEL_GCONF_UNDEFINED_CONNECTION) {
 		eel_gconf_notification_remove (plugin->priv->enable_browsing_notify_id);
 		plugin->priv->enable_browsing_notify_id = EEL_GCONF_UNDEFINED_CONNECTION;
+	}
+
+	g_object_unref (plugin->priv->dacp_share);
+
+	if (plugin->priv->enable_remote_notify_id != EEL_GCONF_UNDEFINED_CONNECTION) {
+		eel_gconf_notification_remove (plugin->priv->enable_remote_notify_id);
+		plugin->priv->enable_remote_notify_id = EEL_GCONF_UNDEFINED_CONNECTION;
 	}
 
 	g_object_get (shell,
@@ -458,33 +514,33 @@ find_source_by_service_name (RBDaapPlugin *plugin,
 }
 
 static void
-mdns_service_added (RBDaapMdnsBrowser *browser,
-		    const char        *service_name,
-		    const char        *name,
-		    const char        *host,
-		    guint              port,
-		    gboolean           password_protected,
-		    RBDaapPlugin      *plugin)
+mdns_service_added (DMAPMdnsBrowser *browser,
+		    DMAPMdnsBrowserService *service,
+		    RBDaapPlugin	*plugin)
 {
 	RBSource *source;
 
 	rb_debug ("New service: %s name=%s host=%s port=%u password=%d",
-		   service_name, name, host, port, password_protected);
+		   service->service_name,
+		   service->name,
+		   service->host,
+		   service->port,
+		   service->password_protected);
 
 	GDK_THREADS_ENTER ();
 
-	source = find_source_by_service_name (plugin, service_name);
+	source = find_source_by_service_name (plugin, service->service_name);
 
 	if (source == NULL) {
-		source = rb_daap_source_new (plugin->priv->shell, RB_PLUGIN (plugin), service_name, name, host, port, password_protected);
-		g_hash_table_insert (plugin->priv->source_lookup, g_strdup (service_name), source);
+		source = rb_daap_source_new (plugin->priv->shell, RB_PLUGIN (plugin), service->service_name, service->name, service->host, service->port, service->password_protected);
+		g_hash_table_insert (plugin->priv->source_lookup, g_strdup (service->service_name), source);
 		rb_shell_append_source (plugin->priv->shell, source, NULL);
 	} else {
 		g_object_set (G_OBJECT (source),
-			      "name", name,
-			      "host", host,
-			      "port", port,
-			      "password-protected", password_protected,
+			      "name", service->name,
+			      "host", service->host,
+			      "port", service->port,
+			      "password-protected", service->password_protected,
 			      NULL);
 	}
 
@@ -492,7 +548,7 @@ mdns_service_added (RBDaapMdnsBrowser *browser,
 }
 
 static void
-mdns_service_removed (RBDaapMdnsBrowser *browser,
+mdns_service_removed (DMAPMdnsBrowser *browser,
 		      const char        *service_name,
 		      RBDaapPlugin	*plugin)
 {
@@ -533,7 +589,7 @@ start_browsing (RBDaapPlugin *plugin)
 		return;
 	}
 
-	plugin->priv->mdns_browser = rb_daap_mdns_browser_new ();
+	plugin->priv->mdns_browser = dmap_mdns_browser_new (DMAP_MDNS_BROWSER_SERVICE_TYPE_DAAP);
 	if (plugin->priv->mdns_browser == NULL) {
 		g_warning ("Unable to start mDNS browsing");
 		return;
@@ -551,7 +607,7 @@ start_browsing (RBDaapPlugin *plugin)
 				 0);
 
 	error = NULL;
-	rb_daap_mdns_browser_start (plugin->priv->mdns_browser, &error);
+	dmap_mdns_browser_start (plugin->priv->mdns_browser, &error);
 	if (error != NULL) {
 		g_warning ("Unable to start mDNS browsing: %s", error->message);
 		g_error_free (error);
@@ -581,7 +637,7 @@ stop_browsing (RBDaapPlugin *plugin)
 	g_signal_handlers_disconnect_by_func (plugin->priv->mdns_browser, mdns_service_removed, plugin);
 
 	error = NULL;
-	rb_daap_mdns_browser_stop (plugin->priv->mdns_browser, &error);
+	dmap_mdns_browser_stop (plugin->priv->mdns_browser, &error);
 	if (error != NULL) {
 		g_warning ("Unable to stop mDNS browsing: %s", error->message);
 		g_error_free (error);
@@ -606,6 +662,34 @@ enable_browsing_changed_cb (GConfClient *client,
 	}
 }
 
+static void
+enable_remote_changed_cb (GConfClient *client,
+			    guint cnxn_id,
+			    GConfEntry *entry,
+			    RBDaapPlugin *plugin)
+{
+	gboolean enabled = eel_gconf_get_boolean (CONF_ENABLE_REMOTE);
+
+	if (enabled) {
+		dacp_share_start_lookup (plugin->priv->dacp_share);
+	} else {
+		dacp_share_stop_lookup (plugin->priv->dacp_share);
+	}
+}
+
+static void
+libdmapsharing_debug (const char *domain,
+		      GLogLevelFlags level,
+		      const char *message,
+		      gpointer data)
+{
+	if ((level & G_LOG_LEVEL_DEBUG) != 0) {
+		rb_debug ("%s", message);
+	} else {
+		g_log_default_handler (domain, level, message, data);
+	}
+}
+
 /* daap share connect/disconnect commands */
 
 static void
@@ -627,6 +711,7 @@ new_daap_share_location_added_cb (RBURIDialog *dialog,
 	char *host;
 	char *p;
 	int port = 3689;
+	DMAPMdnsBrowserService service;
 
 	host = g_strdup (location);
 	p = strrchr (host, ':');
@@ -636,12 +721,12 @@ new_daap_share_location_added_cb (RBURIDialog *dialog,
 	}
 
 	rb_debug ("adding manually specified DAAP share at %s", location);
+	service.name = (char *) location;
+	service.host = (char *) location;
+	service.port = port;
+	service.password_protected = FALSE;
 	mdns_service_added (NULL,
-			    g_strdup (location),
-			    g_strdup (location),
-			    g_strdup (host),
-			    port,
-			    FALSE,
+			    &service,
 			    plugin);
 
 	g_free (host);
@@ -717,15 +802,32 @@ preferences_response_cb (GtkWidget *dialog, gint response, RBPlugin *plugin)
 
 static void
 share_check_button_toggled_cb (GtkToggleButton *button,
-			       GtkWidget *widget)
+			       GtkBuilder *builder)
 {
 	gboolean b;
+	GtkToggleButton *password_check;
+	GtkWidget *password_entry;
 
 	b = gtk_toggle_button_get_active (button);
 
 	eel_gconf_set_boolean (CONF_DAAP_ENABLE_SHARING, b);
 
-	gtk_widget_set_sensitive (widget, b);
+	password_check = GTK_TOGGLE_BUTTON (gtk_builder_get_object (builder, "daap_password_check"));
+	password_entry = GTK_WIDGET (gtk_builder_get_object (builder, "daap_password_entry"));
+
+	gtk_widget_set_sensitive (password_entry, b && gtk_toggle_button_get_active (password_check));
+	gtk_widget_set_sensitive (GTK_WIDGET (password_check), b);
+}
+
+static void
+remote_check_button_toggled_cb (GtkToggleButton *button,
+			       gpointer data)
+{
+	gboolean b;
+
+	b = gtk_toggle_button_get_active (button);
+
+	eel_gconf_set_boolean (CONF_ENABLE_REMOTE, b);
 }
 
 static void
@@ -739,6 +841,13 @@ password_check_button_toggled_cb (GtkToggleButton *button,
 	eel_gconf_set_boolean (CONF_DAAP_REQUIRE_PASSWORD, b);
 
 	gtk_widget_set_sensitive (widget, b);
+}
+
+static void
+forget_remotes_button_toggled_cb (GtkToggleButton *button,
+				  gpointer data)
+{
+	eel_gconf_unset (CONF_KNOWN_REMOTES);
 }
 
 static gboolean
@@ -805,28 +914,37 @@ static void
 update_config_widget (RBDaapPlugin *plugin)
 {
 	GtkWidget *check;
+	GtkWidget *remote_check;
 	GtkWidget *name_entry;
 	GtkWidget *password_entry;
 	GtkWidget *password_check;
-	GtkWidget *box;
+	GtkWidget *forget_remotes_button;
 	gboolean sharing_enabled;
+	gboolean remote_enabled;
 	gboolean require_password;
 	char *name;
 	char *password;
 
 	check = GTK_WIDGET (gtk_builder_get_object (plugin->priv->builder, "daap_enable_check"));
+	remote_check = GTK_WIDGET (gtk_builder_get_object (plugin->priv->builder, "dacp_enable_check"));
 	password_check = GTK_WIDGET (gtk_builder_get_object (plugin->priv->builder, "daap_password_check"));
 	name_entry = GTK_WIDGET (gtk_builder_get_object (plugin->priv->builder, "daap_name_entry"));
 	password_entry = GTK_WIDGET (gtk_builder_get_object (plugin->priv->builder, "daap_password_entry"));
-	box = GTK_WIDGET (gtk_builder_get_object (plugin->priv->builder, "daap_box"));
+	forget_remotes_button = GTK_WIDGET (gtk_builder_get_object (plugin->priv->builder, "forget_remotes_button"));
 
 	sharing_enabled = eel_gconf_get_boolean (CONF_DAAP_ENABLE_SHARING);
 	gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (check), sharing_enabled);
-	g_signal_connect (check, "toggled", G_CALLBACK (share_check_button_toggled_cb), box);
+	g_signal_connect (check, "toggled", G_CALLBACK (share_check_button_toggled_cb), plugin->priv->builder);
+
+	remote_enabled = eel_gconf_get_boolean (CONF_ENABLE_REMOTE);
+	gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (remote_check), remote_enabled);
+	g_signal_connect (remote_check, "toggled", G_CALLBACK (remote_check_button_toggled_cb), plugin->priv->builder);
 
 	require_password = eel_gconf_get_boolean (CONF_DAAP_REQUIRE_PASSWORD);
 	gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (password_check), require_password);
 	g_signal_connect (password_check, "toggled", G_CALLBACK (password_check_button_toggled_cb), password_entry);
+
+	g_signal_connect (forget_remotes_button, "clicked", G_CALLBACK (forget_remotes_button_toggled_cb), NULL);
 
 	name = eel_gconf_get_string (CONF_DAAP_SHARE_NAME);
 	if (name == NULL || name[0] == '\0')
@@ -844,7 +962,6 @@ update_config_widget (RBDaapPlugin *plugin)
 	g_signal_connect (password_entry, "focus-out-event",
 			  G_CALLBACK (share_password_entry_focus_out_event_cb), NULL);
 
-	gtk_widget_set_sensitive (box, sharing_enabled);
 	gtk_widget_set_sensitive (password_entry, require_password);
 }
 
@@ -900,6 +1017,7 @@ impl_create_configure_dialog (RBPlugin *bplugin)
 gboolean
 rb_daap_add_source (RBDaapPlugin *plugin, gchar *service_name, gchar *host, unsigned int port, GError **error)
 {
+	DMAPMdnsBrowserService service;
 
 	if (plugin->priv->shutdown)
 		return FALSE;
@@ -907,12 +1025,12 @@ rb_daap_add_source (RBDaapPlugin *plugin, gchar *service_name, gchar *host, unsi
 	rb_debug ("Add DAAP source %s (%s:%d)", service_name, host, port);
 
 	rb_debug ("adding manually specified DAAP share at %s", service_name);
+	service.name = service_name;
+	service.host = host;
+	service.port = port;
+	service.password_protected = FALSE;
 	mdns_service_added (NULL,
-			    g_strdup (service_name),
-			    g_strdup (service_name),
-			    g_strdup (host),
-			    port,
-			    FALSE,
+			    &service,
 			    plugin);
 
 	return TRUE;

@@ -29,9 +29,9 @@
 #ifndef __RB_SHELL_H
 #define __RB_SHELL_H
 
-#include "rb-source.h"
-#include "rhythmdb.h"
-#include "rb-song-info.h"
+#include <sources/rb-source.h>
+#include <rhythmdb/rhythmdb.h>
+#include <widgets/rb-song-info.h>
 
 G_BEGIN_DECLS
 
@@ -42,18 +42,20 @@ G_BEGIN_DECLS
 #define RB_IS_SHELL_CLASS(k)  (G_TYPE_CHECK_CLASS_TYPE ((k), RB_TYPE_SHELL))
 #define RB_SHELL_GET_CLASS(o) (G_TYPE_INSTANCE_GET_CLASS ((o), RB_TYPE_SHELL, RBShellClass))
 
-enum
+typedef enum
 {
 	RB_SHELL_ERROR_NO_SUCH_URI,
 	RB_SHELL_ERROR_NO_SUCH_PROPERTY,
 	RB_SHELL_ERROR_IMMUTABLE_PROPERTY,
 	RB_SHELL_ERROR_INVALID_PROPERTY_TYPE,
 	RB_SHELL_ERROR_NO_SOURCE_FOR_URI
-};
+} RBShellError;
 
 #define RB_SHELL_ERROR rb_shell_error_quark ()
 
 GQuark rb_shell_error_quark (void);
+GType rb_shell_error_get_type (void);
+#define RB_TYPE_SHELL_ERROR (rb_shell_error_get_type ())
 
 typedef enum
 {
@@ -67,16 +69,18 @@ typedef enum
 GType rb_shell_ui_location_get_type (void);
 #define RB_TYPE_SHELL_UI_LOCATION	(rb_shell_ui_location_get_type())
 
-typedef struct RBShellPrivate RBShellPrivate;
+typedef struct _RBShell RBShell;
+typedef struct _RBShellClass RBShellClass;
+typedef struct _RBShellPrivate RBShellPrivate;
 
-typedef struct
+struct _RBShell
 {
         GObject parent;
 
 	RBShellPrivate *priv;
-} RBShell;
+};
 
-typedef struct
+struct _RBShellClass
 {
         GObjectClass parent_class;
 
@@ -85,13 +89,15 @@ typedef struct
 	void	 (*visibility_changed)	(RBShell *shell, gboolean visible);
 	void	 (*create_song_info)	(RBShell *shell, RBSongInfo *song_info, gboolean multi);
 	void	 (*removable_media_scan_finished) (RBShell *shell);
-} RBShellClass;
+	void     (*database_load_complete) (RBShell *shell);
+};
 
 GType		rb_shell_get_type	(void);
 
 RBShell *	rb_shell_new		(gboolean no_registration,
 					 gboolean no_update,
 					 gboolean dry_run,
+					 gboolean autostarted,
 					 char *rhythmdb,
 					 char *playlists);
 
@@ -140,11 +146,16 @@ gboolean	rb_shell_clear_queue (RBShell *shell,
 gboolean	rb_shell_quit (RBShell *shell,
 			       GError **error);
 
+gboolean	rb_shell_activate_source_by_uri (RBShell *shell,
+						 const char *source_uri,
+						 guint play,
+						 GError **error);
+
 void            rb_shell_notify_custom  (RBShell *shell,
 					 guint timeout,
 					 const char *primary,
 					 const char *secondary,
-					 GdkPixbuf *pixbuf,
+					 const char *image_uri,
 					 gboolean requested);
 gboolean	rb_shell_do_notify (RBShell *shell,
 				    gboolean requested,
@@ -152,9 +163,9 @@ gboolean	rb_shell_do_notify (RBShell *shell,
 
 void            rb_shell_register_entry_type_for_source (RBShell *shell,
 							 RBSource *source,
-							 RhythmDBEntryType type);
+							 RhythmDBEntryType *type);
 RBSource * rb_shell_get_source_by_entry_type (RBShell *shell,
-					      RhythmDBEntryType type);
+					      RhythmDBEntryType *type);
 
 gboolean        rb_shell_get_party_mode (RBShell *shell);
 

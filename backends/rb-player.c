@@ -33,6 +33,21 @@
 #include "rb-player-gst-xfade.h"
 #include "rb-marshal.h"
 
+/**
+ * RBPlayerPlayType:
+ * @RB_PLAYER_PLAY_REPLACE: Replace the existing stream
+ * @RB_PLAYER_PLAY_AFTER_EOS: Start the new stream after the current stream ends
+ * @RB_PLAYER_PLAY_CROSSFADE: Crossfade between the existing stream and the new stream
+ */
+
+/**
+ * RBPlayerError:
+ * @RB_PLAYER_ERROR_NO_AUDIO: Audio playback not available
+ * @RB_PLAYER_ERROR_GENERAL: Nonspecific error
+ * @RB_PLAYER_ERROR_INTERNAL: Internal error
+ * @RB_PLAYER_ERROR_NOT_FOUND: The resource could not be found
+ */
+
 /* Signals */
 enum {
 	EOS,
@@ -44,6 +59,7 @@ enum {
 	PLAYING_STREAM,
 	VOLUME_CHANGED,
 	IMAGE,
+	REDIRECT,
 	LAST_SIGNAL
 };
 
@@ -56,7 +72,7 @@ static guint signals[LAST_SIGNAL] = { 0 };
  *
  * This is the interface implemented by the rhythmbox playback backends.
  * It allows the caller to control playback (open, play, pause, close), 
- * seek (set_time), control volume (get_volume, set_volume, set_replaygain)
+ * seek (set_time), control volume (get_volume, set_volume)
  * and receive playback state information (get_time, various signals).
  *
  * The playback interface allows for multiple streams to be playing (or at
@@ -274,6 +290,25 @@ rb_player_interface_init (RBPlayerIface *iface)
 			      G_TYPE_NONE,
 			      2,
 			      G_TYPE_POINTER, GDK_TYPE_PIXBUF);
+
+	/**
+	 * RBPlayer::redirect:
+	 * @player: the #RBPlayer
+	 * @stream_data: data associated with the stream
+	 * @uri: URI to redirect to
+	 *
+	 * The 'redirect' signal is emitted to indicate when a stream has change URI.
+	 */
+	signals[REDIRECT] =
+		g_signal_new ("redirect",
+			      G_TYPE_FROM_INTERFACE (iface),
+			      G_SIGNAL_RUN_LAST,
+			      G_STRUCT_OFFSET (RBPlayerIface, redirect),
+			      NULL, NULL,
+			      rb_marshal_VOID__POINTER_STRING,
+			      G_TYPE_NONE,
+			      2,
+			      G_TYPE_POINTER, G_TYPE_STRING);
 }
 
 GType
@@ -327,6 +362,8 @@ rb_player_open (RBPlayer *player, const char *uri, gpointer stream_data, GDestro
 /**
  * rb_player_opened:
  * @player: 	a #RBPlayer
+ *
+ * Determines whether a stream has been prepared for playback.
  *
  * Return value: TRUE if a stream is prepared for playback
  */
@@ -417,8 +454,10 @@ rb_player_pause (RBPlayer *player)
  * rb_player_playing:
  * @player:	a #RBPlayer.
  *
- * Return value: TRUE if a stream is currently being played (not paused
- *  or being faded out).
+ * Determines whether the player is currently playing a stream.
+ * A stream is playing if it's not paused or being faded out.
+ *
+ * Return value: TRUE if playing
  */
 gboolean
 rb_player_playing (RBPlayer *player)
@@ -449,6 +488,8 @@ rb_player_set_volume (RBPlayer *player, float volume)
  * rb_player_get_volume:
  * @player:	a #RBPlayer
  *
+ * Returns the current volume level, between 0.0 and 1.0.
+ *
  * Return value: current output volume level
  */
 float
@@ -460,30 +501,10 @@ rb_player_get_volume (RBPlayer *player)
 }
 
 /**
- * rb_player_set_replaygain:
- * @player:	a #RBPlayer
- * @uri:	URI of stream to adjust
- * @track_gain: ReplayGain track gain level
- * @track_peak: ReplayGain track peak level
- * @album_gain: ReplayGain album gain level
- * @album_peak: ReplayGain album peak level
- *
- * Sets ReplayGain values for a stream
- */
-void
-rb_player_set_replaygain (RBPlayer *player,
-			  const char *uri,
-			  double track_gain, double track_peak,
-			  double album_gain, double album_peak)
-{
-	RBPlayerIface *iface = RB_PLAYER_GET_IFACE (player);
-
-	iface->set_replaygain (player, uri, track_gain, track_peak, album_gain, album_peak);
-}
-
-/**
  * rb_player_seekable:
  * @player:	a #RBPlayer
+ *
+ * Determines whether seeking is supported for the current stream.
  *
  * Return value: TRUE if the current stream is seekable
  */
@@ -516,8 +537,9 @@ rb_player_set_time (RBPlayer *player, gint64 newtime)
  * rb_player_get_time:
  * @player:	a #RBPlayer
  *
- * Return value: the current playback position in the current stream
- *  in nanoseconds.
+ * Returns the current playback for the current stream in nanoseconds.
+ *
+ * Return value: playback position
  */
 gint64
 rb_player_get_time (RBPlayer *player)
@@ -531,8 +553,9 @@ rb_player_get_time (RBPlayer *player)
  * rb_player_multiple_open:
  * @player:	a #RBPlayer
  *
- * Return value: TRUE if the player supports multiple open streams
- * 		(not necessarily multiple playing streams, though)
+ * Determines whether the player supports multiple open streams.
+ *
+ * Return value: TRUE if multiple open is supported
  */
 gboolean
 rb_player_multiple_open (RBPlayer *player)
@@ -703,6 +726,21 @@ _rb_player_emit_image (RBPlayer *player, gpointer stream_data, GdkPixbuf *image)
 	g_signal_emit (player, signals[IMAGE], 0, stream_data, image);
 }
 
+/**
+ * _rb_player_emit_redirect:
+ * @player: a #RBPlayer implementation
+ * @stream_data: data associated with the stream
+ * @uri: URI to redirect to
+ *
+ * Emits the 'redirect' signal to notify listeners that the stream has been
+ * redirected. To be used by implementations only.
+ */
+void
+_rb_player_emit_redirect (RBPlayer *player, gpointer stream_data, const char *uri)
+{
+	g_signal_emit (player, signals[REDIRECT], 0, stream_data, uri);
+}
+
 GQuark
 rb_player_error_quark (void)
 {
@@ -723,9 +761,10 @@ rb_player_error_get_type (void)
 
 	if (etype == 0)	{
 		static const GEnumValue values[] = {
-			ENUM_ENTRY (RB_PLAYER_ERROR_NO_AUDIO, "Stream contains no audio"),
-			ENUM_ENTRY (RB_PLAYER_ERROR_GENERAL, "General error"),
-			ENUM_ENTRY (RB_PLAYER_ERROR_INTERNAL, "Internal backend error"),
+			ENUM_ENTRY (RB_PLAYER_ERROR_NO_AUDIO, "no-audio"),
+			ENUM_ENTRY (RB_PLAYER_ERROR_GENERAL, "general-error"),
+			ENUM_ENTRY (RB_PLAYER_ERROR_INTERNAL, "internal-error"),
+			ENUM_ENTRY (RB_PLAYER_ERROR_NOT_FOUND, "not-found"),
 			{ 0, 0, 0 }
 		};
 
@@ -742,9 +781,9 @@ rb_player_play_type_get_type (void)
 
 	if (etype == 0)	{
 		static const GEnumValue values[] = {
-			ENUM_ENTRY (RB_PLAYER_PLAY_REPLACE, "Replace existing stream"),
-			ENUM_ENTRY (RB_PLAYER_PLAY_AFTER_EOS, "Start new stream after EOS of existing stream"),
-			ENUM_ENTRY (RB_PLAYER_PLAY_CROSSFADE, "Crossfade between streams"),
+			ENUM_ENTRY (RB_PLAYER_PLAY_REPLACE, "replace"),
+			ENUM_ENTRY (RB_PLAYER_PLAY_AFTER_EOS, "start-after-eos"),
+			ENUM_ENTRY (RB_PLAYER_PLAY_CROSSFADE, "crossfade"),
 			{ 0, 0, 0 }
 		};
 

@@ -28,9 +28,9 @@
 #ifndef __RB_REMOVABLE_MEDIA_SOURCE_H
 #define __RB_REMOVABLE_MEDIA_SOURCE_H
 
-#include "rb-shell.h"
-#include "rb-browser-source.h"
-#include "rhythmdb.h"
+#include <shell/rb-shell.h>
+#include <sources/rb-browser-source.h>
+#include <rhythmdb/rhythmdb.h>
 
 G_BEGIN_DECLS
 
@@ -41,12 +41,15 @@ G_BEGIN_DECLS
 #define RB_IS_REMOVABLE_MEDIA_SOURCE_CLASS(k)  (G_TYPE_CHECK_CLASS_TYPE ((k), RB_TYPE_REMOVABLE_MEDIA_SOURCE))
 #define RB_REMOVABLE_MEDIA_SOURCE_GET_CLASS(o) (G_TYPE_INSTANCE_GET_CLASS ((o), RB_TYPE_REMOVABLE_MEDIA_SOURCE, RBRemovableMediaSourceClass))
 
-typedef struct
+typedef struct _RBRemovableMediaSource RBRemovableMediaSource;
+typedef struct _RBRemovableMediaSourceClass RBRemovableMediaSourceClass;
+
+struct _RBRemovableMediaSource
 {
 	RBBrowserSource parent;
-} RBRemovableMediaSource;
+};
 
-typedef struct
+struct _RBRemovableMediaSourceClass
 {
 	RBBrowserSourceClass parent;
 
@@ -66,7 +69,9 @@ typedef struct
 						 GError *error);
 	gboolean	(*impl_should_paste)	(RBRemovableMediaSource *source,
 						 RhythmDBEntry *entry);
-} RBRemovableMediaSourceClass;
+	gboolean	(*impl_can_eject)	(RBRemovableMediaSource *source);
+	void		(*impl_eject)		(RBRemovableMediaSource *source);		/* return error? */
+};
 
 typedef gboolean	(*RBRemovableMediaSourceShouldPasteFunc) (RBRemovableMediaSource *source,
 								  RhythmDBEntry *entry);
@@ -80,18 +85,21 @@ char*		rb_removable_media_source_build_dest_uri 	(RBRemovableMediaSource *source
 void		rb_removable_media_source_track_added		(RBRemovableMediaSource *source,
 								 RhythmDBEntry *entry,
 								 const char *uri,
-								 guint64 dest_size,
+								 guint64 filesize,
 								 const char *mimetype);
 void		rb_removable_media_source_track_add_error	(RBRemovableMediaSource *source,
 								 RhythmDBEntry *entry,
 								 const char *uri,
 								 GError *error);
 GList *		rb_removable_media_source_get_mime_types	(RBRemovableMediaSource *source);
+GList *		rb_removable_media_source_get_format_descriptions (RBRemovableMediaSource *source);
 gboolean	rb_removable_media_source_should_paste		(RBRemovableMediaSource *source,
 								 RhythmDBEntry *entry);
 gboolean        rb_removable_media_source_should_paste_no_duplicate (RBRemovableMediaSource *source,
 								     RhythmDBEntry *entry);
 
+gboolean	rb_removable_media_source_can_eject		(RBRemovableMediaSource *source);
+void		rb_removable_media_source_eject			(RBRemovableMediaSource *source);
 
 G_END_DECLS
 

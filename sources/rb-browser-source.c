@@ -204,7 +204,6 @@ rb_browser_source_class_init (RBBrowserSourceClass *klass)
 	source_class->impl_get_property_views = impl_get_property_views;
 	source_class->impl_reset_filters = impl_reset_filters;
 	source_class->impl_song_properties = impl_song_properties;
-	source_class->impl_can_pause = (RBSourceFeatureFunc) rb_true_function;
 	source_class->impl_can_cut = (RBSourceFeatureFunc) rb_false_function;
 	source_class->impl_can_copy = (RBSourceFeatureFunc) rb_true_function;
 	source_class->impl_can_delete = (RBSourceFeatureFunc) rb_true_function;
@@ -343,7 +342,7 @@ rb_browser_source_constructed (GObject *object)
 	GObject *shell_player;
 	char *browser_key;
 	char *paned_key;
-	RhythmDBEntryType entry_type;
+	RhythmDBEntryType *entry_type;
 
 	RB_CHAIN_GOBJECT_METHOD (rb_browser_source_parent_class, constructed, object);
 
@@ -408,6 +407,8 @@ rb_browser_source_constructed (GObject *object)
 	rb_entry_view_append_column (source->priv->songs, RB_ENTRY_VIEW_COL_DURATION, FALSE);
  	rb_entry_view_append_column (source->priv->songs, RB_ENTRY_VIEW_COL_QUALITY, FALSE);
 	rb_entry_view_append_column (source->priv->songs, RB_ENTRY_VIEW_COL_PLAY_COUNT, FALSE);
+	rb_entry_view_append_column (source->priv->songs, RB_ENTRY_VIEW_COL_BPM, FALSE);
+	rb_entry_view_append_column (source->priv->songs, RB_ENTRY_VIEW_COL_COMMENT, FALSE);
 	rb_entry_view_append_column (source->priv->songs, RB_ENTRY_VIEW_COL_LOCATION, FALSE);
 
 	g_signal_connect_object (G_OBJECT (source->priv->songs), "show_popup",
@@ -480,7 +481,7 @@ rb_browser_source_constructed (GObject *object)
 	source->priv->cached_all_query = rhythmdb_query_model_new_empty (source->priv->db);
 	rb_browser_source_populate (source);
 
-	g_boxed_free (RHYTHMDB_TYPE_ENTRY_TYPE, entry_type);
+	g_object_unref (entry_type);
 }
 
 static void
@@ -569,7 +570,7 @@ rb_browser_source_populate (RBBrowserSource *source)
 				      RHYTHMDB_QUERY_RESULTS (source->priv->cached_all_query),
 				      RHYTHMDB_QUERY_PROP_EQUALS, RHYTHMDB_PROP_TYPE, entry_type,
 				      RHYTHMDB_QUERY_END);
-	g_boxed_free (RHYTHMDB_TYPE_ENTRY_TYPE, entry_type);
+	g_object_unref (entry_type);
 }
 
 static void
@@ -821,7 +822,7 @@ rb_browser_source_get_paned_key (RBBrowserSource *source)
 
 /**
  * rb_browser_source_has_drop_support:
- * @source: a #RBBrowser
+ * @source: a #RBBrowserSource
  *
  * This is a virtual method that should be implemented by subclasses.  It returns %TRUE
  * if drag and drop target support for the source should be activated.
@@ -883,7 +884,7 @@ rb_browser_source_do_query (RBBrowserSource *source, gboolean subset)
 {
 	RhythmDBQueryModel *query_model;
 	GPtrArray *query;
-	RhythmDBEntryType entry_type;
+	RhythmDBEntryType *entry_type;
 
 	/* use the cached 'all' query to optimise the no-search case */
 	if (source->priv->search_query == NULL) {
@@ -901,7 +902,7 @@ rb_browser_source_do_query (RBBrowserSource *source, gboolean subset)
 				      RHYTHMDB_QUERY_SUBQUERY,
 				      source->priv->search_query,
 				      RHYTHMDB_QUERY_END);
-	g_boxed_free (RHYTHMDB_TYPE_ENTRY_TYPE, entry_type);
+	g_object_unref (entry_type);
 
 	if (subset) {
 		/* if we're appending text to an existing search string, the results will be a subset

@@ -117,10 +117,10 @@ rb_source_group_category_get_type (void)
 
 	if (etype == 0) {
 		static const GEnumValue values[] = {
-			ENUM_ENTRY (RB_SOURCE_GROUP_CATEGORY_FIXED, "Fixed single instance source"),
-			ENUM_ENTRY (RB_SOURCE_GROUP_CATEGORY_PERSISTENT, "Persistent multiple-instance source"),
-			ENUM_ENTRY (RB_SOURCE_GROUP_CATEGORY_REMOVABLE, "Source representing a removable device"),
-			ENUM_ENTRY (RB_SOURCE_GROUP_CATEGORY_TRANSIENT, "Transient source (eg. network shares)"),
+			ENUM_ENTRY (RB_SOURCE_GROUP_CATEGORY_FIXED, "fixed"),
+			ENUM_ENTRY (RB_SOURCE_GROUP_CATEGORY_PERSISTENT, "persistent"),
+			ENUM_ENTRY (RB_SOURCE_GROUP_CATEGORY_REMOVABLE, "removable"),
+			ENUM_ENTRY (RB_SOURCE_GROUP_CATEGORY_TRANSIENT, "transient"),
 			{ 0, 0, 0 }
 		};
 
@@ -191,7 +191,9 @@ rb_source_group_register (const char           *name,
 /**
  * rb_source_group_library_get_type:
  *
- * Return value: the predefined library source group
+ * Returns the predefined library source group
+ *
+ * Return value: library source group
  */
 RBSourceGroup *
 rb_source_group_library_get_type (void)
@@ -202,7 +204,9 @@ rb_source_group_library_get_type (void)
 /**
  * rb_source_group_playlists_get_type:
  *
- * Return value: the predefined playlists source group
+ * Returns the predefined playlists source group
+ *
+ * Return value: playlists source group
  */
 RBSourceGroup *
 rb_source_group_playlists_get_type (void)
@@ -213,7 +217,9 @@ rb_source_group_playlists_get_type (void)
 /**
  * rb_source_group_devices_get_type:
  *
- * Return value: the predefined devices source group
+ * Returns the predefined devices source group
+ *
+ * Return value: devices source group
  */
 RBSourceGroup *
 rb_source_group_devices_get_type (void)
@@ -224,7 +230,9 @@ rb_source_group_devices_get_type (void)
 /**
  * rb_source_group_shared_get_type:
  *
- * Return value: the predefined shared source group
+ * Returns the predefined shared source group
+ *
+ * Return value: shared source group
  */
 RBSourceGroup *
 rb_source_group_shared_get_type (void)
@@ -235,7 +243,9 @@ rb_source_group_shared_get_type (void)
 /**
  * rb_source_group_stores_get_type:
  *
- * Return value: the predefined stores source group
+ * Returns the predefined stores source group
+ *
+ * Return value: stores source group
  */
 RBSourceGroup *
 rb_source_group_stores_get_type (void)

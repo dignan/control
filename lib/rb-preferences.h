@@ -54,8 +54,6 @@ G_BEGIN_DECLS
 #define CONF_STATE_BURN_DEVICE	CONF_PREFIX "/state/burn_device"
 
 #define CONF_AUDIOSCROBBLER_USERNAME CONF_PREFIX "/audioscrobbler/username"
-#define CONF_AUDIOSCROBBLER_PASSWORD CONF_PREFIX "/audioscrobbler/password"
-#define CONF_AUDIOSCROBBLER_URL      CONF_PREFIX "/audioscrobbler/scrobbler_url"
 
 #define CONF_DAAP_ENABLE_SHARING   CONF_PREFIX "/sharing/enable_sharing"
 #define CONF_DAAP_SHARE_NAME       CONF_PREFIX "/sharing/share_name"
@@ -68,7 +66,6 @@ G_BEGIN_DECLS
 #define CONF_LIBRARY_LAYOUT_PATH	CONF_PREFIX "/library_layout_path"
 #define CONF_LIBRARY_LAYOUT_FILENAME	CONF_PREFIX "/library_layout_filename"
 #define CONF_LIBRARY_PREFERRED_FORMAT	CONF_PREFIX "/library_preferred_format"
-#define CONF_USE_REPLAYGAIN	CONF_PREFIX "/use_replaygain"
 
 #define CONF_PLUGINS_PREFIX		CONF_PREFIX "/plugins"
 #define CONF_PLUGIN_DISABLE_USER	CONF_PLUGINS_PREFIX "/no_user_plugins"

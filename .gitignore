@@ -27,6 +27,7 @@ INSTALL
 depcomp
 gtk-doc.make
 gnome-doc-utils.make
+rhythmbox.pc
 
 #
 bindings/python/rb.c
@@ -36,6 +37,7 @@ bindings/python/rhythmdb.c
 org.gnome.Rhythmbox.service
 *.desktop
 rhythmbox.desktop.in
+rhythmbox-device.desktop.in
 playlists.xml
 
 #
@@ -61,6 +63,7 @@ plugins/audiocd/sj-metadata-marshal.h
 plugins/daap/rb-daap-glue.h
 plugins/sample-vala/rb-sample-vala-plugin.c
 plugins/sample-vala/rb-sample-vala-plugin.h
+plugins/sample-vala/libsample_vala_la_vala.stamp
 plugins/visualizer/rb-visualizer-glue.h
 
 #
@@ -102,3 +105,18 @@ tests/test-widgets
 #
 doc/reference/tmpl/*.sgml
 doc/reference/tmpl/*.sgml.bak
+doc/reference/*.stamp
+doc/reference/html/
+doc/reference/xml/
+doc/reference/rhythmbox-decl*
+doc/reference/rhythmbox-undeclared.txt
+doc/reference/rhythmbox-undocumented.txt
+doc/reference/rhythmbox-unused.txt
+doc/reference/rhythmbox.args
+doc/reference/rhythmbox.hierarchy
+doc/reference/rhythmbox.interfaces
+doc/reference/rhythmbox.prerequisites
+doc/reference/rhythmbox.signals
+
+#
+widgets/test-rb-segmented-bar

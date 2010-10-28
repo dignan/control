@@ -31,7 +31,7 @@
 
 #include <glib-object.h>
 #include <gdk-pixbuf/gdk-pixbuf.h>
-#include "rb-metadata.h"
+#include <metadata/rb-metadata.h>
 
 G_BEGIN_DECLS
 
@@ -49,7 +49,8 @@ typedef enum
 {
 	RB_PLAYER_ERROR_NO_AUDIO,
 	RB_PLAYER_ERROR_GENERAL,
-	RB_PLAYER_ERROR_INTERNAL
+	RB_PLAYER_ERROR_INTERNAL,
+	RB_PLAYER_ERROR_NOT_FOUND
 } RBPlayerError;
 
 GType rb_player_error_get_type (void);
@@ -94,12 +95,6 @@ struct _RBPlayerIface
 	void		(*set_volume)		(RBPlayer *player,
 						 float volume);
 	float		(*get_volume)		(RBPlayer *player);
-	void		(*set_replaygain)	(RBPlayer *player,
-						 const char *uri,
-						 double track_gain,
-						 double track_peak,
-						 double album_gain,
-						 double album_peak);
 
 	gboolean	(*seekable)		(RBPlayer *player);
 	void		(*set_time)		(RBPlayer *player,
@@ -136,6 +131,9 @@ struct _RBPlayerIface
 	void		(*image)		(RBPlayer *player,
 						 gpointer stream_data,
 						 GdkPixbuf *image);
+	void		(*redirect)		(RBPlayer *player,
+						 gpointer stream_data,
+						 const gchar *uri);
 };
 
 GType		rb_player_get_type   (void);
@@ -161,10 +159,6 @@ gboolean	rb_player_playing    (RBPlayer *player);
 
 void		rb_player_set_volume (RBPlayer *player, float volume);
 float		rb_player_get_volume (RBPlayer *player);
-void		rb_player_set_replaygain (RBPlayer *player,
-					  const char *uri,
-					  double track_gain, double track_peak,
-					  double album_gain, double album_peak);
 
 gboolean	rb_player_seekable   (RBPlayer *player);
 void		rb_player_set_time   (RBPlayer *player, gint64 newtime);
@@ -182,6 +176,7 @@ void	_rb_player_emit_event (RBPlayer *player, gpointer stream_data, const char *
 void	_rb_player_emit_playing_stream (RBPlayer *player, gpointer stream_data);
 void	_rb_player_emit_volume_changed (RBPlayer *player, float volume);
 void	_rb_player_emit_image (RBPlayer *player, gpointer stream_data, GdkPixbuf *image);
+void	_rb_player_emit_redirect (RBPlayer *player, gpointer stream_data, const char *uri);
 
 G_END_DECLS
 

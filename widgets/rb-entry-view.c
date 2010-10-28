@@ -54,6 +54,23 @@
 
 /**
  * RBEntryViewColumn:
+ * @RB_ENTRY_VIEW_COL_TRACK_NUMBER: the track number column
+ * @RB_ENTRY_VIEW_COL_TITLE: the title column
+ * @RB_ENTRY_VIEW_COL_ARTIST: the artist column
+ * @RB_ENTRY_VIEW_COL_ALBUM: the album column
+ * @RB_ENTRY_VIEW_COL_GENRE: the genre column
+ * @RB_ENTRY_VIEW_COL_DURATION: the duration column
+ * @RB_ENTRY_VIEW_COL_QUALITY: the quality (bitrate) column
+ * @RB_ENTRY_VIEW_COL_RATING: the rating column
+ * @RB_ENTRY_VIEW_COL_PLAY_COUNT: the play count column
+ * @RB_ENTRY_VIEW_COL_YEAR: the year (release date) column
+ * @RB_ENTRY_VIEW_COL_LAST_PLAYED: the last played time column
+ * @RB_ENTRY_VIEW_COL_FIRST_SEEN: the first seen (imported) column
+ * @RB_ENTRY_VIEW_COL_LAST_SEEN: the last seen column
+ * @RB_ENTRY_VIEW_COL_LOCATION: the location column
+ * @RB_ENTRY_VIEW_COL_BPM: the BPM column
+ * @RB_ENTRY_VIEW_COL_COMMENT: the comment column
+ * @RB_ENTRY_VIEW_COL_ERROR: the error column
  *
  * Predefined column types to use in #RBEntryView<!-- -->s.  Use
  * #rb_entry_view_append_column to add these to an entry view.
@@ -86,6 +103,7 @@
 #include "eel-gconf-extensions.h"
 #include "rb-shell-player.h"
 #include "rb-cut-and-paste-code.h"
+#include "gseal-gtk-compat.h"
 
 static const GtkTargetEntry rb_entry_view_drag_types[] = {
 	{ "application/x-rhythmbox-entry", 0, 0 },
@@ -197,6 +215,7 @@ struct RBEntryViewPrivate
 	GtkTreeViewColumn *sorting_column;
 	gint sorting_order;
 	char *sorting_column_name;
+	RhythmDBPropType type_ahead_propid;
 
 	gboolean have_selection, have_complete_selection;
 
@@ -247,6 +266,7 @@ type_ahead_search_func (GtkTreeModel *model,
 			GtkTreeIter *iter,
 			gpointer search_data)
 {
+	RBEntryView *view = RB_ENTRY_VIEW (search_data);
 	RhythmDBEntry *entry;
 	gchar *folded;
 	const gchar *entry_folded;
@@ -254,7 +274,7 @@ type_ahead_search_func (GtkTreeModel *model,
 
 	gtk_tree_model_get (model, iter, 0, &entry, -1);
 	folded = rb_search_fold (key);
-	entry_folded = rhythmdb_entry_get_string (entry, RHYTHMDB_PROP_TITLE_FOLDED);
+	entry_folded = rb_refstring_get_folded (rhythmdb_entry_get_refstring (entry, view->priv->type_ahead_propid));
 	rhythmdb_entry_unref (entry);
 
 	if (entry_folded == NULL || folded == NULL)
@@ -539,6 +559,7 @@ rb_entry_view_init (RBEntryView *view)
 	view->priv->propid_column_map = g_hash_table_new (NULL, NULL);
 	view->priv->column_sort_data_map = g_hash_table_new_full (NULL, NULL, NULL, g_free);
 	view->priv->column_key_map = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+	view->priv->type_ahead_propid = RHYTHMDB_PROP_TITLE;
 }
 
 static void
@@ -947,6 +968,31 @@ rb_entry_view_rating_cell_data_func (GtkTreeViewColumn *column,
 }
 
 static void
+rb_entry_view_bpm_cell_data_func (GtkTreeViewColumn *column,
+				   GtkCellRenderer *renderer,
+				   GtkTreeModel *tree_model,
+				   GtkTreeIter *iter,
+				   struct RBEntryViewCellDataFuncData *data)
+{
+	RhythmDBEntry *entry;
+	char *str;
+	gdouble val;
+
+	entry = rhythmdb_query_model_iter_to_entry (data->view->priv->model, iter);
+
+	val = rhythmdb_entry_get_double (entry, data->propid);
+
+	if (val > 0.001)
+		str = g_strdup_printf ("%.2f", val);
+	else
+		str = g_strdup ("");
+
+	g_object_set (renderer, "text", str, NULL);
+	g_free (str);
+	rhythmdb_entry_unref (entry);
+}
+
+static void
 rb_entry_view_long_cell_data_func (GtkTreeViewColumn *column,
 				   GtkCellRenderer *renderer,
 				   GtkTreeModel *tree_model,
@@ -1120,6 +1166,8 @@ rb_entry_view_sync_sorting (RBEntryView *view)
 	GtkTreeViewColumn *column;
 	gint direction;
 	char *column_name;
+	RhythmDBPropType type_ahead_propid;
+	GList *renderers;
 
 	direction = GTK_SORT_ASCENDING;
 	column_name = NULL;
@@ -1145,6 +1193,15 @@ rb_entry_view_sync_sorting (RBEntryView *view)
 	view->priv->sorting_column = column;
 	gtk_tree_view_column_set_sort_indicator (column, TRUE);
 	gtk_tree_view_column_set_sort_order (column, direction);
+
+	/* set the property id to use for the typeahead search */
+	renderers = gtk_cell_layout_get_cells (GTK_CELL_LAYOUT (column));
+	type_ahead_propid = GPOINTER_TO_INT (g_object_get_data (G_OBJECT (renderers->data), CELL_PROPID_ITEM));
+	g_list_free (renderers);
+	if (type_ahead_propid != 0 && rhythmdb_get_property_type (view->priv->db, type_ahead_propid) == G_TYPE_STRING)
+		view->priv->type_ahead_propid = type_ahead_propid;
+	else
+		view->priv->type_ahead_propid = RHYTHMDB_PROP_TITLE;
 
 	rb_debug ("emitting sort order changed");
 	g_signal_emit (G_OBJECT (view), rb_entry_view_signals[SORT_ORDER_CHANGED], 0);
@@ -1255,7 +1312,7 @@ rb_entry_view_get_sorting_order (RBEntryView *view,
  * rb_entry_view_set_sorting_order:
  * @view: a #RBEntryView
  * @column_name: name of the column to sort on
- * @sort_order: order to sort in, as a #GtkSortOrder
+ * @sort_order: order to sort in, as a #GtkSortType
  *
  * Sets the sort order for the entry view.
  */
@@ -1332,6 +1389,9 @@ rb_entry_view_get_column (RBEntryView *view, RBEntryViewColumn coltype)
 	case RB_ENTRY_VIEW_COL_GENRE:
 		propid = RHYTHMDB_PROP_GENRE;
 		break;
+	case RB_ENTRY_VIEW_COL_COMMENT:
+		propid = RHYTHMDB_PROP_COMMENT;
+		break;
 	case RB_ENTRY_VIEW_COL_DURATION:
 		propid = RHYTHMDB_PROP_DURATION;
 		break;
@@ -1390,6 +1450,7 @@ rb_entry_view_cell_edited_cb (GtkCellRendererText *renderer,
 	case RHYTHMDB_PROP_GENRE:
 	case RHYTHMDB_PROP_ARTIST:
 	case RHYTHMDB_PROP_ALBUM:
+	case RHYTHMDB_PROP_COMMENT:
 	case RHYTHMDB_PROP_ARTIST_SORTNAME:
 	case RHYTHMDB_PROP_ALBUM_SORTNAME:
 		break;
@@ -1502,6 +1563,16 @@ rb_entry_view_append_column (RBEntryView *view,
 		sort_func = (GCompareDataFunc) rhythmdb_query_model_genre_sort_func;
 		title = _("Genre");
 		key = "Genre";
+		ellipsize = TRUE;
+		break;
+	case RB_ENTRY_VIEW_COL_COMMENT:
+		propid = RHYTHMDB_PROP_COMMENT;
+		cell_data->propid = propid;
+		cell_data_func = (GtkTreeCellDataFunc) rb_entry_view_string_cell_data_func;
+		sort_propid = cell_data->propid;
+		sort_func = (GCompareDataFunc) rhythmdb_query_model_string_sort_func;
+		title = _("Comment");
+		key = "Comment";
 		ellipsize = TRUE;
 		break;
 	case RB_ENTRY_VIEW_COL_DURATION:
@@ -1620,6 +1691,16 @@ rb_entry_view_append_column (RBEntryView *view,
 		key = "Location";
 		ellipsize = TRUE;
 		break;
+	case RB_ENTRY_VIEW_COL_BPM:
+		propid = RHYTHMDB_PROP_BPM;
+		cell_data->propid = propid;
+		cell_data_func = (GtkTreeCellDataFunc) rb_entry_view_bpm_cell_data_func;
+		sort_func = (GCompareDataFunc) rhythmdb_query_model_double_ceiling_sort_func;
+		title = _("BPM");
+		key = "BPM";
+		strings[0] = title;
+		strings[1] = "999.99";
+		break;
 	case RB_ENTRY_VIEW_COL_ERROR:
 		propid = RHYTHMDB_PROP_PLAYBACK_ERROR;
 		cell_data->propid = RHYTHMDB_PROP_PLAYBACK_ERROR;
@@ -1647,6 +1728,7 @@ rb_entry_view_append_column (RBEntryView *view,
 		g_signal_connect_object (renderer, "edited",
 					 G_CALLBACK (rb_entry_view_cell_edited_cb),
 					 view, 0);
+		g_object_set (renderer, "single-paragraph-mode", TRUE, NULL);
 	} else {
 		g_free (cell_data);
 	}
@@ -1733,9 +1815,6 @@ rb_entry_view_insert_column_custom (RBEntryView *view,
 	gtk_tree_view_column_set_title (column, title);
 	gtk_tree_view_column_set_reorderable (column, FALSE);
 
-	g_signal_connect_object (column, "clicked",
-				 G_CALLBACK (rb_entry_view_column_clicked_cb),
-				 view, 0);
 
 	g_object_set_data_full (G_OBJECT (column), "rb-entry-view-key",
 				g_strdup (key), g_free);
@@ -1750,6 +1829,10 @@ rb_entry_view_insert_column_custom (RBEntryView *view,
 		sortdata->data = data;
 		sortdata->data_destroy = data_destroy;
 		g_hash_table_insert (view->priv->column_sort_data_map, column, sortdata);
+
+		g_signal_connect_object (column, "clicked",
+					 G_CALLBACK (rb_entry_view_column_clicked_cb),
+					 view, 0);
 	}
 	g_hash_table_insert (view->priv->column_key_map, g_strdup (key), column);
 
@@ -1795,7 +1878,7 @@ rb_entry_view_constructed (GObject *object)
 
 	gtk_tree_view_set_search_equal_func (GTK_TREE_VIEW (view->priv->treeview),
 					     type_ahead_search_func,
-					     NULL, NULL);
+					     view, NULL);
 
 	g_signal_connect_object (view->priv->treeview,
 			         "button_press_event",
@@ -1994,8 +2077,10 @@ harvest_entries (GtkTreeModel *model,
  * rb_entry_view_get_selected_entries:
  * @view: a #RBEntryView
  *
- * Return value: a #GList containing the currently selected entries in the view
- *  (must be freed)
+ * Gathers the selected entries from the view.
+ *
+ * Return value: a #GList of selected entries in the view
+ *  (must be freed and the entries unreffed)
  */
 GList *
 rb_entry_view_get_selected_entries (RBEntryView *view)
@@ -2091,7 +2176,9 @@ rb_entry_view_selection_changed_cb (GtkTreeSelection *selection,
  * rb_entry_view_have_selection:
  * @view: a #RBEntryView
  *
- * Return value: TRUE if one or more rows are selected in the view
+ * Determines whether there is an active selection in the view.
+ *
+ * Return value: TRUE if one or more rows are selected
  */
 gboolean
 rb_entry_view_have_selection (RBEntryView *view)
@@ -2102,6 +2189,8 @@ rb_entry_view_have_selection (RBEntryView *view)
 /**
  * rb_entry_view_have_complete_selection:
  * @view: a #RBEntryView
+ *
+ * Determines whether all entries in the view are selected.
  *
  * Return value: TRUE if all rows in the view are selected
  */
@@ -2288,7 +2377,7 @@ rb_entry_view_scroll_to_iter (RBEntryView *view,
 	 * view to the playing entry before the view has ever been displayed.
 	 * This will result in gtk+ warnings, so we avoid it in this case.
 	 */
-	if (!GTK_WIDGET_REALIZED (view))
+	if (!gtk_widget_get_realized (GTK_WIDGET (view)))
 		return;
 
 	path = gtk_tree_model_get_path (GTK_TREE_MODEL (view->priv->model), iter);
@@ -2306,7 +2395,10 @@ rb_entry_view_scroll_to_iter (RBEntryView *view,
  * @view: a #RBEntryView
  * @entry: a #RhythmDBEntry to check
  *
- * Return value: TRUE if the entry is present in the view and is currently visible
+ * Determines whether a specified entry is present in the view
+ * and is currently visible.
+ *
+ * Return value: TRUE if the entry is visible
  */
 gboolean
 rb_entry_view_get_entry_visible (RBEntryView *view,
@@ -2327,6 +2419,8 @@ rb_entry_view_get_entry_visible (RBEntryView *view,
  * rb_entry_view_get_entry_contained:
  * @view: a #RBEntryView
  * @entry: a #RhythmDBEntry to check
+ *
+ * Determines whether a specified entry is present in the view.
  *
  * Return value: TRUE if the entry is present in the view
  */
@@ -2355,7 +2449,7 @@ rb_entry_view_entry_is_visible (RBEntryView *view,
 
 	g_return_if_fail (entry != NULL);
 
-	if (!GTK_WIDGET_REALIZED (view))
+	if (!gtk_widget_get_realized (GTK_WIDGET (view)))
 		return;
 
 	*realized = TRUE;
@@ -2634,21 +2728,23 @@ rb_entry_view_column_get_type (void)
 
 	if (etype == 0)	{
 		static const GEnumValue values[] = {
-			ENUM_ENTRY (RB_ENTRY_VIEW_COL_TRACK_NUMBER, "Track Number"),
-			ENUM_ENTRY (RB_ENTRY_VIEW_COL_TITLE, "Title"),
-			ENUM_ENTRY (RB_ENTRY_VIEW_COL_ARTIST, "Artist"),
-			ENUM_ENTRY (RB_ENTRY_VIEW_COL_ALBUM, "Album"),
-			ENUM_ENTRY (RB_ENTRY_VIEW_COL_GENRE, "Genre"),
-			ENUM_ENTRY (RB_ENTRY_VIEW_COL_DURATION, "Duration"),
-			ENUM_ENTRY (RB_ENTRY_VIEW_COL_QUALITY, "Quality"),
-			ENUM_ENTRY (RB_ENTRY_VIEW_COL_RATING, "Rating"),
-			ENUM_ENTRY (RB_ENTRY_VIEW_COL_PLAY_COUNT, "Play Count"),
-			ENUM_ENTRY (RB_ENTRY_VIEW_COL_YEAR, "Year"),
-			ENUM_ENTRY (RB_ENTRY_VIEW_COL_LAST_PLAYED, "Last Played"),
-			ENUM_ENTRY (RB_ENTRY_VIEW_COL_FIRST_SEEN, "First Seen"),
-			ENUM_ENTRY (RB_ENTRY_VIEW_COL_LAST_SEEN, "Last Seen"),
-			ENUM_ENTRY (RB_ENTRY_VIEW_COL_LOCATION, "Location"),
-			ENUM_ENTRY (RB_ENTRY_VIEW_COL_ERROR, "Error"),
+			ENUM_ENTRY (RB_ENTRY_VIEW_COL_TRACK_NUMBER, "track-number"),
+			ENUM_ENTRY (RB_ENTRY_VIEW_COL_TITLE, "title"),
+			ENUM_ENTRY (RB_ENTRY_VIEW_COL_ARTIST, "artist"),
+			ENUM_ENTRY (RB_ENTRY_VIEW_COL_ALBUM, "album"),
+			ENUM_ENTRY (RB_ENTRY_VIEW_COL_GENRE, "genre"),
+			ENUM_ENTRY (RB_ENTRY_VIEW_COL_COMMENT, "comment"),
+			ENUM_ENTRY (RB_ENTRY_VIEW_COL_DURATION, "duration"),
+			ENUM_ENTRY (RB_ENTRY_VIEW_COL_QUALITY, "quality"),
+			ENUM_ENTRY (RB_ENTRY_VIEW_COL_RATING, "rating"),
+			ENUM_ENTRY (RB_ENTRY_VIEW_COL_PLAY_COUNT, "play-count"),
+			ENUM_ENTRY (RB_ENTRY_VIEW_COL_YEAR, "year"),
+			ENUM_ENTRY (RB_ENTRY_VIEW_COL_LAST_PLAYED, "last-played"),
+			ENUM_ENTRY (RB_ENTRY_VIEW_COL_FIRST_SEEN, "first-seen"),
+			ENUM_ENTRY (RB_ENTRY_VIEW_COL_LAST_SEEN, "last-seen"),
+			ENUM_ENTRY (RB_ENTRY_VIEW_COL_LOCATION, "location"),
+			ENUM_ENTRY (RB_ENTRY_VIEW_COL_BPM, "bpm"),
+			ENUM_ENTRY (RB_ENTRY_VIEW_COL_ERROR, "error"),
 			{ 0, 0, 0 }
 		};
 
@@ -2665,9 +2761,9 @@ rb_entry_view_state_get_type (void)
 
 	if (etype == 0)	{
 		static const GEnumValue values[] = {
-			ENUM_ENTRY (RB_ENTRY_VIEW_NOT_PLAYING, "Not Playing"),
-			ENUM_ENTRY (RB_ENTRY_VIEW_PLAYING, "Playing"),
-			ENUM_ENTRY (RB_ENTRY_VIEW_PAUSED, "Paused"),
+			ENUM_ENTRY (RB_ENTRY_VIEW_NOT_PLAYING, "not-playing"),
+			ENUM_ENTRY (RB_ENTRY_VIEW_PLAYING, "playing"),
+			ENUM_ENTRY (RB_ENTRY_VIEW_PAUSED, "paused"),
 			{ 0, 0, 0 }
 		};
 

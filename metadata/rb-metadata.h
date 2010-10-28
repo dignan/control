@@ -60,15 +60,20 @@ typedef enum
 	RB_METADATA_FIELD_ALBUM_GAIN,		   /* double */
 	RB_METADATA_FIELD_ALBUM_PEAK,		   /* double */
 	RB_METADATA_FIELD_LANGUAGE_CODE,	   /* string */
+	RB_METADATA_FIELD_BPM,			   /* double */
 	RB_METADATA_FIELD_MUSICBRAINZ_TRACKID,     /* string */
 	RB_METADATA_FIELD_MUSICBRAINZ_ARTISTID,    /* string */
 	RB_METADATA_FIELD_MUSICBRAINZ_ALBUMID,     /* string */
 	RB_METADATA_FIELD_MUSICBRAINZ_ALBUMARTISTID,   /* string */
 	RB_METADATA_FIELD_ARTIST_SORTNAME,         /* string */
-	RB_METADATA_FIELD_ALBUM_SORTNAME,         /* string */
+	RB_METADATA_FIELD_ALBUM_SORTNAME,          /* string */
+	RB_METADATA_FIELD_ALBUM_ARTIST,            /* string */
+	RB_METADATA_FIELD_ALBUM_ARTIST_SORTNAME,   /* string */
 
 	RB_METADATA_FIELD_LAST			   /* nothing */
 } RBMetaDataField;
+
+#define RB_TYPE_METADATA_FIELD (rb_metadata_field_get_type ())
 
 typedef enum
 {
@@ -82,6 +87,7 @@ typedef enum
 } RBMetaDataError;
 
 #define RB_METADATA_ERROR rb_metadata_error_quark ()
+#define RB_TYPE_METADATA_ERROR (rb_metadata_error_get_type ())
 
 GQuark rb_metadata_error_quark (void);
 
@@ -111,6 +117,9 @@ struct _RBMetaDataClass
 
 GType		rb_metadata_get_type	(void);
 
+GType		rb_metadata_field_get_type (void);
+GType		rb_metadata_error_get_type (void);
+
 GType		rb_metadata_get_field_type (RBMetaDataField field);
 
 const char *	rb_metadata_get_field_name (RBMetaDataField field);
@@ -120,11 +129,14 @@ RBMetaData *	rb_metadata_new		(void);
 gboolean	rb_metadata_can_save	(RBMetaData *md, const char *mimetype);
 char **		rb_metadata_get_saveable_types (RBMetaData *md);
 
+void		rb_metadata_reset	(RBMetaData *md);
+
 void		rb_metadata_load	(RBMetaData *md,
 					 const char *uri,
 					 GError **error);
 
 void		rb_metadata_save	(RBMetaData *md,
+					 const char *uri,
 					 GError **error);
 
 const char *	rb_metadata_get_mime	(RBMetaData *md);

@@ -377,7 +377,9 @@ rb_play_order_get_query_model (RBPlayOrder *porder)
  * rb_play_order_player_is_playing:
  * @porder: #RBPlayOrder instance
  *
- * Returns: true if there is a current playing entry in the play order.
+ * Returns %TRUE if there is a current playing entry in the play order.
+ *
+ * Return value: %TRUE if playing
  **/
 gboolean
 rb_play_order_player_is_playing (RBPlayOrder *porder)
@@ -407,7 +409,9 @@ rb_play_order_set_playing_entry (RBPlayOrder *porder,
  * rb_play_order_get_playing_entry:
  * @porder: #RBPlayOrder instance
  *
- * Returns: the current playing entry in the play order.
+ * Returns the current playing entry in the play order.
+ *
+ * Returns: playing entry
  */
 RhythmDBEntry *
 rb_play_order_get_playing_entry (RBPlayOrder *porder)
@@ -512,7 +516,8 @@ rb_play_order_query_model_changed (RBPlayOrder *porder)
 		g_object_get (porder->priv->source, "query-model", &new_model, NULL);
 
 	if (porder->priv->query_model == new_model) {
-		g_object_unref (new_model);
+		if (new_model != NULL)
+			g_object_unref (new_model);
 		return;
 	}
 
@@ -745,7 +750,9 @@ rb_play_order_has_next (RBPlayOrder *porder)
  * rb_play_order_get_next:
  * @porder: RBPlayOrder instance
  *
- * Returns: the next entry in the play order, or the first if not currently playing.
+ * Returns the next entry in the play order, or the first if not currently playing.
+ *
+ * Returns: next entry to play
  */
 RhythmDBEntry *
 rb_play_order_get_next (RBPlayOrder *porder)
@@ -785,8 +792,10 @@ rb_play_order_go_next (RBPlayOrder *porder)
  * rb_play_order_has_previous:
  * @porder: RBPlayOrder instance
  *
- * Returns: true if there is an entry before the current entry in the play order.
- * If not currently playing, returns false.
+ * Returns %TRUE if there is an entry before the current entry in the play order.
+ * If not currently playing, returns %FALSE.
+ *
+ * Return value: %TRUE if previous entry exists
  */
 gboolean
 rb_play_order_has_previous (RBPlayOrder *porder)
@@ -801,7 +810,9 @@ rb_play_order_has_previous (RBPlayOrder *porder)
  * rb_play_order_get_previous:
  * @porder: RBPlayOrder instance
  *
- * Returns: the previous entry in the play order, or NULL if not currently playing.
+ * Returns the previous entry in the play order, or NULL if not currently playing.
+ *
+ * Return value: previous entry
  */
 RhythmDBEntry *
 rb_play_order_get_previous (RBPlayOrder *porder)
@@ -840,9 +851,11 @@ rb_play_order_go_previous (RBPlayOrder *porder)
  * rb_play_order_model_not_empty:
  * @porder: RBPlayOrder instance
  *
- * Returns: true if the #RhythmDBQueryModel is not empty.
+ * Returns %TRUE if the #RhythmDBQueryModel is not empty.
  * Can be used to implement has_next and has_previous for play orders
  * that have no beginning or end.
+ *
+ * Return value: %TRUE if not empty
  */
 gboolean
 rb_play_order_model_not_empty (RBPlayOrder *porder)

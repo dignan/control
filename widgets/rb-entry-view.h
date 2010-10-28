@@ -31,8 +31,8 @@
 
 #include <gtk/gtk.h>
 
-#include "rhythmdb.h"
-#include "rhythmdb-query-model.h"
+#include <rhythmdb/rhythmdb.h>
+#include <rhythmdb/rhythmdb-query-model.h>
 
 G_BEGIN_DECLS
 
@@ -49,6 +49,7 @@ typedef enum {
 	RB_ENTRY_VIEW_COL_ARTIST,
 	RB_ENTRY_VIEW_COL_ALBUM,
 	RB_ENTRY_VIEW_COL_GENRE,
+	RB_ENTRY_VIEW_COL_COMMENT,
 	RB_ENTRY_VIEW_COL_DURATION,
 	RB_ENTRY_VIEW_COL_QUALITY,
 	RB_ENTRY_VIEW_COL_RATING,
@@ -58,6 +59,7 @@ typedef enum {
 	RB_ENTRY_VIEW_COL_FIRST_SEEN,
 	RB_ENTRY_VIEW_COL_LAST_SEEN,
 	RB_ENTRY_VIEW_COL_LOCATION,
+	RB_ENTRY_VIEW_COL_BPM,
 	RB_ENTRY_VIEW_COL_ERROR
 } RBEntryViewColumn;
 

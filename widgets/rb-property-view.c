@@ -185,7 +185,7 @@ rb_property_view_class_init (RBPropertyViewClass *klass)
 	/**
 	 * RBPropertyView:property-model:
 	 *
-	 * The #RhythmDBProperyModel backing the view.
+	 * The #RhythmDBPropertyModel backing the view.
 	 */
 	g_object_class_install_property (object_class,
 					 PROP_MODEL,
@@ -230,7 +230,9 @@ rb_property_view_class_init (RBPropertyViewClass *klass)
 	 * @view: the #RBPropertyView
 	 * @name: the property value that has been selected
 	 *
-	 * Emitted when an individual property value becomes selected.
+	 * Emitted when an individual property value becomes selected.  This is only
+	 * emitted for single-selection property views.  For multiple-selection views,
+	 * use the properties-selected signal.
 	 */
 	rb_property_view_signals[PROPERTY_SELECTED] =
 		g_signal_new ("property-selected",
@@ -248,7 +250,9 @@ rb_property_view_class_init (RBPropertyViewClass *klass)
 	 * @view: the #RBPropertyView
 	 * @properties: a list containing the selected property values
 	 *
-	 * Emitted when the set of selected property values changes.
+	 * Emitted when the set of selected property values changes.  This is only
+	 * emitted for multiple selection property views.  For single-selection views,
+	 * use the property-selected signal.
 	 */
 	rb_property_view_signals[PROPERTIES_SELECTED] =
 		g_signal_new ("properties-selected",
@@ -521,7 +525,9 @@ rb_property_view_reset (RBPropertyView *view)
  * rb_property_view_get_model:
  * @view: a #RBPropertyView
  * 
- * Return value: the #RhythmDBPropertyModel backing the view; no reference is taken
+ * Returns the #RhythmDBPropertyModel backing the view; no reference is taken
+ *
+ * Return value: property model
  */
 RhythmDBPropertyModel *
 rb_property_view_get_model (RBPropertyView *view)
@@ -586,7 +592,9 @@ rb_property_view_post_row_deleted_cb (GtkTreeModel *model,
  * rb_property_view_get_num_properties
  * @view: a #RBPropertyView
  *
- * Return value: the number of property values present in the view
+ * Returns the number of property values present in the view.
+ *
+ * Return value: number of properties
  */
 guint
 rb_property_view_get_num_properties (RBPropertyView *view)
@@ -778,8 +786,10 @@ rb_property_view_set_selection (RBPropertyView *view,
  * rb_property_view_get_selection:
  * @view: a #RBPropertyView
  *
- * Return value: a #GList containing the selected property values.  The list must
+ * Returns a #GList containing the selected property values.  The list must
  * be freed by the caller.
+ *
+ * Return value: list of selected values
  */
 GList *
 rb_property_view_get_selection (RBPropertyView *view)

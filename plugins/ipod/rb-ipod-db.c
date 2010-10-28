@@ -133,6 +133,9 @@ rb_itdb_save (RbIpodDb *ipod_db, GError **error)
 	if (priv->needs_shuffle_db) {
 		itdb_shuffle_write (priv->itdb, error);
 	}
+#ifdef HAVE_ITDB_START_STOP_SYNC
+	itdb_stop_sync (priv->itdb);
+#endif
 }
 
 static void
@@ -230,15 +233,14 @@ typedef struct _RbIpodDelayedSetThumbnail RbIpodDelayedSetThumbnail;
 
 struct _RbIpodDelayedPlaylistOp {
 	Itdb_Playlist *playlist;
-	Itdb_Track *track;
+	void *data;
 };
 typedef struct _RbIpodDelayedPlaylistOp RbIpodDelayedPlaylistOp;
 
 struct _RbIpodDelayedAction {
 	RbIpodDelayedActionType type;
 	union {
-		char *name;
-		Itdb_Playlist *playlist;
+		gchar *name;
 		Itdb_Track *track;
 		RbIpodDelayedSetThumbnail thumbnail_data;
 		RbIpodDelayedPlaylistOp playlist_op;
@@ -268,7 +270,7 @@ rb_ipod_free_delayed_action (RbIpodDelayedAction *action)
 		/* Do nothing */
 		break;
 	case RB_IPOD_ACTION_RENAME_PLAYLIST:
-		g_free (action->name);
+		g_free (action->playlist_op.data);
 		break;
 	case RB_IPOD_ACTION_REMOVE_TRACK:
 		/* Do nothing */
@@ -570,30 +572,30 @@ rb_ipod_db_process_delayed_actions (RbIpodDb *ipod_db)
 		case RB_IPOD_ACTION_ADD_PLAYLIST:
 			rb_debug ("IPOD_ACTION_ADD_PLAYLIST");
 			rb_ipod_db_add_playlist_internal (ipod_db, 
-							  action->playlist);
+							  action->playlist_op.playlist);
 			break;
 		case RB_IPOD_ACTION_REMOVE_PLAYLIST:
 			rb_debug ("IPOD_ACTION_REMOVE_PLAYLIST");
 			rb_ipod_db_remove_playlist_internal (ipod_db, 
-							     action->playlist);
+							     action->playlist_op.playlist);
 			break;
 		case RB_IPOD_ACTION_RENAME_PLAYLIST:
 			rb_debug ("IPOD_ACTION_RENAME_PLAYLIST");
-			rb_ipod_db_rename_playlist_internal (ipod_db, 
-							     action->playlist,
-							     action->name);
+			rb_ipod_db_rename_playlist_internal (ipod_db,
+							     action->playlist_op.playlist,
+							     (const char *)action->playlist_op.data);
 			break;
 		case RB_IPOD_ACTION_ADD_TO_PLAYLIST:
 			rb_debug ("IPOD_ACTION_ADD_TO_PLAYLIST");
 			rb_ipod_db_add_to_playlist_internal (ipod_db, 
 							     action->playlist_op.playlist,
-							     action->playlist_op.track);
+							     (Itdb_Track *)action->playlist_op.data);
 			break;
 		case RB_IPOD_ACTION_REMOVE_FROM_PLAYLIST:
 			rb_debug ("IPOD_ACTION_REMOVE_FROM_PLAYLIST");
 			rb_ipod_db_remove_from_playlist_internal (ipod_db, 
 								  action->playlist_op.playlist,
-								  action->playlist_op.track);
+								  (Itdb_Track *)action->playlist_op.data);
 			break;
 		}
 		rb_ipod_free_delayed_action (action);
@@ -642,7 +644,7 @@ rb_ipod_db_queue_add_playlist (RbIpodDb *ipod_db,
 	rb_debug ("Queueing add playlist action since the iPod database is currently read-only");
 	action = g_new0 (RbIpodDelayedAction, 1);
 	action->type = RB_IPOD_ACTION_ADD_PLAYLIST;
-	action->playlist = playlist;
+	action->playlist_op.playlist = playlist;
 	g_queue_push_tail (priv->delayed_actions, action);
 }
 
@@ -657,7 +659,7 @@ rb_ipod_db_queue_remove_playlist (RbIpodDb *ipod_db,
 	rb_debug ("Queueing remove playlist action since the iPod database is currently read-only");
 	action = g_new0 (RbIpodDelayedAction, 1);
 	action->type = RB_IPOD_ACTION_REMOVE_PLAYLIST;
-	action->playlist = playlist;
+	action->playlist_op.playlist = playlist;
 	g_queue_push_tail (priv->delayed_actions, action);
 }
 
@@ -671,10 +673,11 @@ rb_ipod_db_queue_rename_playlist (RbIpodDb *ipod_db,
 	
 	g_assert (priv->read_only);
 	rb_debug ("Queueing rename playlist action since the iPod database is currently read-only");
+        g_print ("playlist queueing: %p %p %s\n", playlist, playlist->name, playlist->name);
 	action = g_new0 (RbIpodDelayedAction, 1);
 	action->type = RB_IPOD_ACTION_RENAME_PLAYLIST;
-	action->playlist = playlist;
-	action->name = g_strdup (name);
+	action->playlist_op.playlist = playlist;
+	action->playlist_op.data = g_strdup (name);
 	g_queue_push_tail (priv->delayed_actions, action);
 }
 
@@ -705,7 +708,7 @@ rb_ipod_db_queue_add_to_playlist (RbIpodDb *ipod_db,
 	action = g_new0 (RbIpodDelayedAction, 1);
 	action->type = RB_IPOD_ACTION_ADD_TO_PLAYLIST;
 	action->playlist_op.playlist = playlist;
-	action->playlist_op.track = track;
+	action->playlist_op.data = track;
 	g_queue_push_tail (priv->delayed_actions, action);
 }
 
@@ -722,7 +725,7 @@ rb_ipod_db_queue_remove_from_playlist (RbIpodDb *ipod_db,
 	action = g_new0 (RbIpodDelayedAction, 1);
 	action->type = RB_IPOD_ACTION_REMOVE_FROM_PLAYLIST;
 	action->playlist_op.playlist = playlist;
-	action->playlist_op.track = track;
+	action->playlist_op.data = track;
 	g_queue_push_tail (priv->delayed_actions, action);
 }
 
@@ -859,13 +862,17 @@ rb_ipod_db_save_async (RbIpodDb *ipod_db)
 	RbIpodDbPrivate *priv = IPOD_DB_GET_PRIVATE (ipod_db);
 
 	if (priv->save_timeout_id == 0) {
-		rb_debug ("Scheduling iPod database save in 15 seconds");
-		priv->save_timeout_id = g_timeout_add_seconds (15, 
-							       (GSourceFunc)save_timeout_cb,
-							       ipod_db);
+#ifdef HAVE_ITDB_START_STOP_SYNC
+		itdb_start_sync (priv->itdb);
+#endif
+		rb_debug ("Scheduling iPod database save in 2 seconds");
 	} else {
-		rb_debug ("Database save already scheduled");
+		g_source_remove (priv->save_timeout_id);
+		rb_debug ("Database save already scheduled, pushing back save in 2 seconds from now");
 	}
+	priv->save_timeout_id = g_timeout_add_seconds (2,
+			                               (GSourceFunc)save_timeout_cb,
+						       ipod_db);
 }
 
 GList *
@@ -873,7 +880,16 @@ rb_ipod_db_get_playlists (RbIpodDb *ipod_db)
 {
 	RbIpodDbPrivate *priv = IPOD_DB_GET_PRIVATE (ipod_db);
 
-	return priv->itdb->playlists;
+	return g_list_copy (priv->itdb->playlists);
+}
+
+Itdb_Playlist *
+rb_ipod_db_get_playlist_by_name (RbIpodDb *ipod_db,
+				 gchar *name)
+{
+	RbIpodDbPrivate *priv = IPOD_DB_GET_PRIVATE (ipod_db);
+
+	return itdb_playlist_by_name (priv->itdb, name);
 }
 
 GList *

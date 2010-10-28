@@ -30,19 +30,18 @@
 #include <config.h>
 #endif
 
-#include <string.h> /* For strlen */
 #include <glib/gi18n-lib.h>
-#include <gmodule.h>
 #include <gtk/gtk.h>
 #include <glib.h>
 #include <glib-object.h>
 
-#include "rb-audioscrobbler.h"
-#include "rb-lastfm-source.h"
+#include "rb-audioscrobbler-service.h"
+#include "rb-audioscrobbler-profile-source.h"
 #include "rb-plugin.h"
+#include "rb-builder-helpers.h"
 #include "rb-debug.h"
 #include "rb-shell.h"
-#include "rb-dialog.h"
+#include "eel-gconf-extensions.h"
 
 
 #define RB_TYPE_AUDIOSCROBBLER_PLUGIN		(rb_audioscrobbler_plugin_get_type ())
@@ -52,21 +51,32 @@
 #define RB_IS_AUDIOSCROBBLER_PLUGIN_CLASS(k)	(G_TYPE_CHECK_CLASS_TYPE ((k), RB_TYPE_AUDIOSCROBBLER_PLUGIN))
 #define RB_AUDIOSCROBBLER_PLUGIN_GET_CLASS(o)	(G_TYPE_INSTANCE_GET_CLASS ((o), RB_TYPE_AUDIOSCROBBLER_PLUGIN, RBAudioscrobblerPluginClass))
 
+#define CONF_AUDIOSCROBBLER_PREFIX CONF_PREFIX "/plugins/audioscrobbler"
+#define CONF_LASTFM_ENABLED CONF_AUDIOSCROBBLER_PREFIX "/Last.fm/enabled"
+#define CONF_LIBREFM_ENABLED CONF_AUDIOSCROBBLER_PREFIX "/Libre.fm/enabled"
+
 typedef struct
 {
 	RBPlugin parent;
-	RBAudioscrobbler *audioscrobbler;
-	GtkWidget *preferences;
-	guint ui_merge_id;
+	RBShell *shell;
 
+	GtkWidget *config_dialog;
+
+	/* Last.fm */
+	GtkWidget *lastfm_enabled_check;
+	guint lastfm_enabled_notification_id;
 	RBSource *lastfm_source;
+
+	/* Libre.fm */
+	GtkWidget *librefm_enabled_check;
+	guint librefm_enabled_notification_id;
+	RBSource *librefm_source;
 } RBAudioscrobblerPlugin;
 
 typedef struct
 {
 	RBPluginClass parent_class;
 } RBAudioscrobblerPluginClass;
-
 
 G_MODULE_EXPORT GType register_rb_plugin (GTypeModule *module);
 GType	rb_audioscrobbler_plugin_get_type		(void) G_GNUC_CONST;
@@ -77,7 +87,22 @@ static void rb_audioscrobbler_plugin_init (RBAudioscrobblerPlugin *plugin);
 static void rb_audioscrobbler_plugin_finalize (GObject *object);
 static void impl_activate (RBPlugin *plugin, RBShell *shell);
 static void impl_deactivate (RBPlugin *plugin, RBShell *shell);
-static GtkWidget* impl_create_configure_dialog (RBPlugin *plugin);
+static GtkWidget *impl_create_configure_dialog (RBPlugin *bplugin);
+static void init_config_dialog (RBAudioscrobblerPlugin *plugin);
+void config_dialog_response_cb (GtkWidget *dialog, gint response,
+                                RBAudioscrobblerPlugin *plugin);
+void lastfm_enabled_check_toggled_cb (GtkToggleButton *togglebutton,
+                                      RBAudioscrobblerPlugin *plugin);
+static void lastfm_enabled_changed_cb (GConfClient *client,
+                                       guint cnxn_id,
+                                       GConfEntry *entry,
+                                       RBAudioscrobblerPlugin *plugin);
+void librefm_enabled_check_toggled_cb (GtkToggleButton *togglebutton,
+                                       RBAudioscrobblerPlugin *plugin);
+static void librefm_enabled_changed_cb (GConfClient *client,
+                                        guint cnxn_id,
+                                        GConfEntry *entry,
+                                        RBAudioscrobblerPlugin *plugin);
 
 RB_PLUGIN_REGISTER(RBAudioscrobblerPlugin, rb_audioscrobbler_plugin)
 
@@ -103,68 +128,50 @@ rb_audioscrobbler_plugin_init (RBAudioscrobblerPlugin *plugin)
 static void
 rb_audioscrobbler_plugin_finalize (GObject *object)
 {
-	RBAudioscrobblerPlugin *plugin = RB_AUDIOSCROBBLER_PLUGIN (object);
-
 	rb_debug ("RBAudioscrobblerPlugin finalising");
-
-	g_assert (plugin->audioscrobbler == NULL);
-
-	if (plugin->preferences)
-		gtk_widget_destroy (plugin->preferences);
 
 	G_OBJECT_CLASS (rb_audioscrobbler_plugin_parent_class)->finalize (object);
 }
-
-
 
 static void
 impl_activate (RBPlugin *bplugin,
 	       RBShell *shell)
 {
-	RBAudioscrobblerPlugin *plugin = RB_AUDIOSCROBBLER_PLUGIN (bplugin);
-	GtkUIManager *uimanager = NULL;
-	gboolean no_registration;
-	char *file;
+	RBAudioscrobblerPlugin *plugin;
+	plugin = RB_AUDIOSCROBBLER_PLUGIN (bplugin);
 
-	/* Source icon data */
-	gchar *icon_filename;
-	gint icon_size;
-	GdkPixbuf *icon_pixbuf;
+	plugin->shell = shell;
+	init_config_dialog (plugin);
 
-	g_assert (plugin->audioscrobbler == NULL);
-	g_object_get (G_OBJECT (shell),
-		      "no-registration", &no_registration,
-		      "ui-manager", &uimanager,
-		      NULL);
-
-	/*
-	 * Don't use audioscrobbler when the no-registration flag is set.
-	 * This flag is only used to run multiple instances at the same time, and
-	 * last.fm only allows one active client per user.
-	 */
-	if (!no_registration) {
-		plugin->audioscrobbler = rb_audioscrobbler_new (RB_SHELL_PLAYER (rb_shell_get_player (shell)));
+	plugin->lastfm_enabled_notification_id =
+		eel_gconf_notification_add (CONF_LASTFM_ENABLED,
+		                            (GConfClientNotifyFunc) lastfm_enabled_changed_cb,
+		                            plugin);
+	gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (plugin->lastfm_enabled_check),
+	                              eel_gconf_get_boolean (CONF_LASTFM_ENABLED));
+	if (eel_gconf_get_boolean (CONF_LASTFM_ENABLED) == TRUE) {
+		RBAudioscrobblerService *lastfm;
+		lastfm = rb_audioscrobbler_service_new_lastfm ();
+		plugin->lastfm_source = rb_audioscrobbler_profile_source_new (plugin->shell,
+		                                                              RB_PLUGIN (plugin),
+		                                                              lastfm);
+		g_object_unref (lastfm);
 	}
 
-	file = rb_plugin_find_file (bplugin, "audioscrobbler-ui.xml");
-	plugin->ui_merge_id = gtk_ui_manager_add_ui_from_file (uimanager,
-							       file,
-							       NULL);
-	g_free (file);
-
-	plugin->lastfm_source = rb_lastfm_source_new (bplugin, shell);
-    
-	icon_filename = rb_plugin_find_file (bplugin, "as-icon.png");
-	gtk_icon_size_lookup (GTK_ICON_SIZE_LARGE_TOOLBAR, &icon_size, NULL);
-	icon_pixbuf = gdk_pixbuf_new_from_file_at_size (icon_filename, icon_size, icon_size, NULL);
-
-	g_free (icon_filename);
-	rb_source_set_pixbuf (plugin->lastfm_source, icon_pixbuf);
-	g_object_unref (icon_pixbuf);
-    
-	rb_shell_append_source (shell, plugin->lastfm_source, NULL);
-
-	g_object_unref (G_OBJECT (uimanager));
+	plugin->librefm_enabled_notification_id =
+		eel_gconf_notification_add (CONF_LIBREFM_ENABLED,
+		                            (GConfClientNotifyFunc) librefm_enabled_changed_cb,
+		                            plugin);
+	gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (plugin->librefm_enabled_check),
+	                              eel_gconf_get_boolean (CONF_LIBREFM_ENABLED));
+	if (eel_gconf_get_boolean (CONF_LIBREFM_ENABLED) == TRUE) {
+		RBAudioscrobblerService *librefm;
+		librefm = rb_audioscrobbler_service_new_librefm ();
+		plugin->librefm_source = rb_audioscrobbler_profile_source_new (plugin->shell,
+		                                                               RB_PLUGIN (plugin),
+		                                                               librefm);
+		g_object_unref (librefm);
+	}
 }
 
 static void
@@ -172,62 +179,134 @@ impl_deactivate	(RBPlugin *bplugin,
 		 RBShell *shell)
 {
 	RBAudioscrobblerPlugin *plugin = RB_AUDIOSCROBBLER_PLUGIN (bplugin);
-	GtkUIManager *uimanager = NULL;
 
-	g_object_get (G_OBJECT (shell),
-		      "ui-manager", &uimanager,
-		      NULL);
+	if (plugin->config_dialog != NULL) {
+		gtk_widget_destroy (plugin->config_dialog);
+		plugin->config_dialog = NULL;
+	}
 
-	rb_source_delete_thyself (plugin->lastfm_source);
-	plugin->lastfm_source = NULL;
+	if (plugin->lastfm_source != NULL) {
+		rb_source_delete_thyself (plugin->lastfm_source);
+		plugin->lastfm_source = NULL;
+	}
 
-	gtk_ui_manager_remove_ui (uimanager, plugin->ui_merge_id);
-	g_object_unref (G_OBJECT (uimanager));
-
-	if (plugin->audioscrobbler) {
-		g_object_unref (plugin->audioscrobbler);
-		plugin->audioscrobbler = NULL;
+	if (plugin->librefm_source != NULL) {
+		rb_source_delete_thyself (plugin->librefm_source);
+		plugin->librefm_source = NULL;
 	}
 }
 
+static GtkWidget *
+impl_create_configure_dialog (RBPlugin *bplugin)
+{
+	RBAudioscrobblerPlugin *plugin;
+	plugin = RB_AUDIOSCROBBLER_PLUGIN (bplugin);
+
+	if (plugin->config_dialog == NULL) {
+		init_config_dialog (plugin);
+	}
+
+	gtk_widget_show_all (plugin->config_dialog);
+	return plugin->config_dialog;
+}
+
 static void
-preferences_response_cb (GtkWidget *dialog, gint response, RBPlugin *plugin)
+init_config_dialog (RBAudioscrobblerPlugin *plugin)
+{
+	char *builderfile;
+	GtkBuilder *builder;
+
+	if (plugin->config_dialog != NULL) {
+		return;
+	}
+
+	builderfile = rb_plugin_find_file (RB_PLUGIN (plugin), "audioscrobbler-preferences.ui");
+	if (builderfile == NULL) {
+		g_warning ("can't find audioscrobbler-preferences.ui");
+		return;
+	}
+
+	builder = rb_builder_load (builderfile, plugin);
+	g_free (builderfile);
+
+	plugin->config_dialog = GTK_WIDGET (gtk_builder_get_object (builder, "config_dialog"));
+	gtk_widget_hide_on_delete (plugin->config_dialog);
+
+	plugin->lastfm_enabled_check = GTK_WIDGET (gtk_builder_get_object (builder, "lastfm_enabled_check"));
+	plugin->librefm_enabled_check = GTK_WIDGET (gtk_builder_get_object (builder, "librefm_enabled_check"));
+
+	g_object_unref (builder);
+}
+
+void
+config_dialog_response_cb (GtkWidget *dialog, gint response,
+                           RBAudioscrobblerPlugin *plugin)
 {
 	gtk_widget_hide (dialog);
 }
 
-static GtkWidget*
-impl_create_configure_dialog (RBPlugin *bplugin)
+void
+lastfm_enabled_check_toggled_cb (GtkToggleButton *togglebutton,
+                                 RBAudioscrobblerPlugin *plugin)
 {
-	RBAudioscrobblerPlugin *plugin = RB_AUDIOSCROBBLER_PLUGIN (bplugin);
-	if (plugin->audioscrobbler == NULL)
-		return NULL;
-
-	if (plugin->preferences == NULL) {
-		GtkWidget *widget;
-
-		widget =  rb_audioscrobbler_get_config_widget (plugin->audioscrobbler, bplugin);
-
-		plugin->preferences = gtk_dialog_new_with_buttons (_("Last.fm Preferences"),
-								   NULL,
-								   GTK_DIALOG_DESTROY_WITH_PARENT,
-								   GTK_STOCK_CLOSE, GTK_RESPONSE_CLOSE,
-								   NULL);
-                gtk_dialog_set_has_separator (GTK_DIALOG (plugin->preferences), FALSE);
-                gtk_container_set_border_width (GTK_CONTAINER (plugin->preferences), 5);
-                gtk_window_set_resizable (GTK_WINDOW (plugin->preferences), FALSE);
-
-		g_signal_connect (G_OBJECT (plugin->preferences),
-				  "response",
-				  G_CALLBACK (preferences_response_cb),
-				  plugin);
-		gtk_widget_hide_on_delete (plugin->preferences);
-
-		gtk_container_add (GTK_CONTAINER (gtk_dialog_get_content_area (GTK_DIALOG (plugin->preferences))),
-				   widget);
-	}
-
-	gtk_widget_show_all (plugin->preferences);
-	return plugin->preferences;
+	eel_gconf_set_boolean (CONF_LASTFM_ENABLED,
+			       gtk_toggle_button_get_active (togglebutton));
 }
 
+static void
+lastfm_enabled_changed_cb (GConfClient *client,
+                           guint cnxn_id,
+                           GConfEntry *entry,
+                           RBAudioscrobblerPlugin *plugin)
+{
+	gboolean enabled;
+	enabled = gconf_value_get_bool (entry->value);
+
+	gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (plugin->lastfm_enabled_check),
+	                              enabled);
+	if (enabled == TRUE && plugin->lastfm_source == NULL) {
+		RBAudioscrobblerService *lastfm;
+		lastfm = rb_audioscrobbler_service_new_lastfm ();
+		plugin->lastfm_source = rb_audioscrobbler_profile_source_new (plugin->shell,
+		                                                              RB_PLUGIN (plugin),
+		                                                              lastfm);
+		g_object_unref (lastfm);
+	} else if (enabled == FALSE && plugin->lastfm_source != NULL) {
+		rb_source_delete_thyself (plugin->lastfm_source);
+		plugin->lastfm_source = NULL;
+	}
+}
+
+void
+librefm_enabled_check_toggled_cb (GtkToggleButton *togglebutton,
+                                  RBAudioscrobblerPlugin *plugin)
+{
+	eel_gconf_set_boolean (CONF_LIBREFM_ENABLED,
+			       gtk_toggle_button_get_active (togglebutton));
+}
+
+static void
+librefm_enabled_changed_cb (GConfClient *client,
+                            guint cnxn_id,
+                            GConfEntry *entry,
+                            RBAudioscrobblerPlugin *plugin)
+{
+	gboolean enabled;
+	enabled = gconf_value_get_bool (entry->value);
+
+	gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (plugin->librefm_enabled_check),
+	                              enabled);
+
+	if (enabled == TRUE && plugin->librefm_source == NULL) {
+		RBAudioscrobblerService *librefm;
+
+		librefm = rb_audioscrobbler_service_new_librefm ();
+		plugin->librefm_source = rb_audioscrobbler_profile_source_new (plugin->shell,
+		                                                               RB_PLUGIN (plugin),
+		                                                               librefm);
+		g_object_unref (librefm);
+	} else if (enabled == FALSE && plugin->librefm_source != NULL) {
+		rb_source_delete_thyself (plugin->librefm_source);
+		plugin->librefm_source = NULL;
+	}
+}

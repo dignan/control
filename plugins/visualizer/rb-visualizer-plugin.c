@@ -81,6 +81,7 @@
 #include <dbus/dbus-glib.h>
 
 #include "rb-vis-widget.h"
+#include "gseal-gtk-compat.h"
 
 /* preferences */
 #define CONF_VIS_PREFIX  CONF_PREFIX "/plugins/visualizer"
@@ -247,24 +248,6 @@ static const VisualizerModeName vis_mode_name[] = {
 };
 
 RB_PLUGIN_REGISTER(RBVisualizerPlugin, rb_visualizer_plugin)
-
-static GdkCursor *
-get_blank_cursor (GdkWindow *window)
-{
-#if !GTK_CHECK_VERSION(2,16,0)
-	GdkPixmap *pixmap;
-	GdkCursor *cursor;
-	GdkColor color = {0, 0, 0, 0};
-
-	pixmap = gdk_bitmap_create_from_data (window, "\0\0\0\0\0\0\0\0", 1, 1);
-	cursor = gdk_cursor_new_from_pixmap (pixmap, pixmap, &color, &color, 0, 0);
-	g_object_unref (pixmap);
-
-	return cursor;
-#else
-	return gdk_cursor_new (GDK_BLANK_CURSOR);
-#endif
-}
 
 static void
 rb_visualizer_plugin_init (RBVisualizerPlugin *plugin)
@@ -824,13 +807,13 @@ actually_hide_controls (RBVisualizerPlugin *plugin)
 		 */
 		gtk_widget_grab_focus (plugin->vis_widget);
 
-		if (GTK_WIDGET_REALIZED (plugin->vis_widget)) {
+		if (gtk_widget_get_realized (plugin->vis_widget)) {
 			GdkWindow *window;
 			GdkCursor *cursor;
 
 			window = gtk_widget_get_window (plugin->vis_widget);
 
-			cursor = get_blank_cursor (window);
+			cursor = gdk_cursor_new (GDK_BLANK_CURSOR);
 			gdk_window_set_cursor (window, cursor);
 			gdk_cursor_unref (cursor);
 		}
@@ -886,7 +869,7 @@ show_controls (RBVisualizerPlugin *plugin, gboolean play_controls_only)
 		case FULLSCREEN:
 			gtk_widget_show (plugin->play_control_widget);
 			gtk_widget_show (plugin->disable_button);
-			if (GTK_WIDGET_REALIZED (plugin->vis_widget)) {
+			if (gtk_widget_get_realized (plugin->vis_widget)) {
 				gdk_window_set_cursor (gtk_widget_get_window (plugin->vis_widget),
 						       NULL);
 			}
@@ -1024,7 +1007,7 @@ resize_vis_window (RBVisualizerPlugin *plugin, int quality, gboolean resize_down
 	float ratio;
 	gboolean update = FALSE;
 
-	if (GTK_WIDGET_REALIZED (plugin->vis_window) == FALSE) {
+	if (gtk_widget_get_realized (plugin->vis_window) == FALSE) {
 		rb_debug ("window isn't realized yet; trying in size-request instead");
 		if (plugin->vis_window_size_request_id == 0) {
 			plugin->vis_window_size_request_id =
@@ -1092,6 +1075,27 @@ resize_vis_window (RBVisualizerPlugin *plugin, int quality, gboolean resize_down
 
 	if (update)
 		gtk_window_resize (GTK_WINDOW (plugin->vis_window), width, height);
+}
+
+static void
+rb_visualizer_plugin_button_press_cb (GtkWidget *vis_widget,
+					GdkEventButton *event,
+					RBVisualizerPlugin *pi)
+{
+	/* toggle fullscreen mode when double clicked */
+	if (event->type == GDK_2BUTTON_PRESS || event->type == GDK_3BUTTON_PRESS) {
+		if (pi->mode == EMBEDDED) {
+			rb_debug ("set fullscreen");
+			update_window (pi,
+				       FULLSCREEN,
+				       eel_gconf_get_integer (CONF_VIS_SCREEN),
+				       eel_gconf_get_integer (CONF_VIS_MONITOR));
+		} else {
+			rb_debug ("set embedded");
+			update_window (pi, EMBEDDED, -1, -1);
+		}
+		enable_visualization (pi);
+	}
 }
 
 static void
@@ -1187,6 +1191,10 @@ update_window (RBVisualizerPlugin *plugin, VisualizerMode mode, int screen, int 
 		g_signal_connect_object (plugin->vis_widget,
 					 "notify::window-xid",
 					 G_CALLBACK (rb_visualizer_plugin_window_id_notify_cb),
+					 plugin, 0);
+		g_signal_connect_object (plugin->vis_widget,
+					 "button_press_event",
+					 G_CALLBACK (rb_visualizer_plugin_button_press_cb),
 					 plugin, 0);
 		gtk_box_pack_start (GTK_BOX (plugin->vis_box), plugin->vis_widget, TRUE, TRUE, 0 /* 6? */);
 	}

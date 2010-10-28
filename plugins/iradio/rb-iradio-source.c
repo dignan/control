@@ -106,7 +106,13 @@ static void impl_song_properties (RBSource *source);
 static gboolean impl_show_popup (RBSource *source);
 static GList *impl_get_ui_actions (RBSource *source);
 static guint impl_want_uri (RBSource *source, const char *uri);
-static gboolean impl_add_uri (RBSource *source, const char *uri, const char *title, const char *genre);
+static void impl_add_uri (RBSource *source,
+			  const char *uri,
+			  const char *title,
+			  const char *genre,
+			  RBSourceAddCallback callback,
+			  gpointer data,
+			  GDestroyNotify destroy_data);
 
 static void rb_iradio_source_do_query (RBIRadioSource *source);
 
@@ -426,18 +432,22 @@ RBSource *
 rb_iradio_source_new (RBShell *shell, RBPlugin *plugin)
 {
 	RBSource *source;
-	RhythmDBEntryType entry_type;
+	RhythmDBEntryType *entry_type;
 	RhythmDB *db;
 
 	g_object_get (shell, "db", &db, NULL);
 
 	entry_type = rhythmdb_entry_type_get_by_name (db, "iradio");
-	if (entry_type == RHYTHMDB_ENTRY_TYPE_INVALID) {
-		entry_type = rhythmdb_entry_register_type (db, "iradio");
-		entry_type->save_to_disk = TRUE;
-		entry_type->category = RHYTHMDB_ENTRY_STREAM;
-		entry_type->can_sync_metadata = (RhythmDBEntryCanSyncFunc) rb_true_function;
-		entry_type->sync_metadata = (RhythmDBEntrySyncFunc) rb_null_function;
+	if (entry_type == NULL) {
+		entry_type = g_object_new (RHYTHMDB_TYPE_ENTRY_TYPE,
+					   "db", db,
+					   "name", "iradio",
+					   "save-to-disk", TRUE,
+					   "category", RHYTHMDB_ENTRY_STREAM,
+					   NULL);
+		entry_type->can_sync_metadata = (RhythmDBEntryTypeBooleanFunc) rb_true_function;
+		entry_type->sync_metadata = (RhythmDBEntryTypeSyncFunc) rb_null_function;
+		rhythmdb_register_entry_type (db, entry_type);
 	}
 	g_object_unref (db);
 
@@ -484,7 +494,7 @@ rb_iradio_source_add_station (RBIRadioSource *source,
 	char *real_uri = NULL;
 	char *fixed_title;
 	char *fixed_genre = NULL;
-	RhythmDBEntryType entry_type;
+	RhythmDBEntryType *entry_type;
 
 	real_uri = guess_uri_scheme (uri);
 	if (real_uri)
@@ -499,7 +509,7 @@ rb_iradio_source_add_station (RBIRadioSource *source,
 
 	g_object_get (source, "entry-type", &entry_type, NULL);
 	entry = rhythmdb_entry_new (source->priv->db, entry_type, uri);
-	g_boxed_free (RHYTHMDB_TYPE_ENTRY_TYPE, entry_type);
+	g_object_unref (entry_type);
 	if (entry == NULL) {
 		g_free (real_uri);
 		return;
@@ -646,8 +656,14 @@ impl_want_uri (RBSource *source, const char *uri)
 	return 0;
 }
 
-static gboolean
-impl_add_uri (RBSource *source, const char *uri, const char *title, const char *genre)
+static void
+impl_add_uri (RBSource *source,
+	      const char *uri,
+	      const char *title,
+	      const char *genre,
+	      RBSourceAddCallback callback,
+	      gpointer data,
+	      GDestroyNotify destroy_data)
 {
 	if (rb_uri_is_local (uri)) {
 		rb_iradio_source_add_from_playlist (RB_IRADIO_SOURCE (source), uri);
@@ -655,7 +671,12 @@ impl_add_uri (RBSource *source, const char *uri, const char *title, const char *
 		rb_iradio_source_add_station (RB_IRADIO_SOURCE (source),
 					      uri, title, genre);
 	}
-	return TRUE;
+	if (callback != NULL) {
+		callback (source, uri, data);
+		if (destroy_data != NULL) {
+			destroy_data (data);
+		}
+	}
 }
 
 static void
@@ -762,7 +783,7 @@ rb_iradio_source_do_query (RBIRadioSource *source)
 	RhythmDBQueryModel *station_query_model = NULL;
 	RhythmDBPropertyModel *genre_model;
 	GPtrArray *query;
-	RhythmDBEntryType entry_type;
+	RhythmDBEntryType *entry_type;
 
 	/* don't update the selection while we're rebuilding the query */
 	source->priv->setting_new_query = TRUE;
@@ -777,7 +798,7 @@ rb_iradio_source_do_query (RBIRadioSource *source)
 				      RHYTHMDB_PROP_TYPE,
 				      entry_type,
 				      RHYTHMDB_QUERY_END);
-	g_boxed_free (RHYTHMDB_TYPE_ENTRY_TYPE, entry_type);
+	g_object_unref (entry_type);
 
 	if (source->priv->search_query != NULL) {
 		rhythmdb_query_append (source->priv->db,
@@ -909,7 +930,7 @@ rb_iradio_source_first_time_changed (GConfClient *client,
 		return;
 
 	g_object_get (source, "plugin", &plugin, NULL);
-	file = rb_plugin_find_file (plugin, "iradio-initial.pls");
+	file = rb_plugin_find_file (plugin, "iradio-initial.xspf");
 	if (file != NULL) {
 		GFile *f;
 
@@ -1007,13 +1028,13 @@ rb_iradio_source_cmd_new_station (GtkAction *action,
 static gboolean
 check_entry_type (RBIRadioSource *source, RhythmDBEntry *entry)
 {
-	RhythmDBEntryType entry_type;
+	RhythmDBEntryType *entry_type;
 	gboolean matches = FALSE;
 
 	g_object_get (source, "entry-type", &entry_type, NULL);
 	if (entry != NULL && rhythmdb_entry_get_entry_type (entry) == entry_type)
 		matches = TRUE;
-	g_boxed_free (RHYTHMDB_TYPE_ENTRY_TYPE, entry_type);
+	g_object_unref (entry_type);
 
 	return matches;
 }

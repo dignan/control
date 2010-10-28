@@ -29,10 +29,12 @@
 #include "config.h"
 
 #include "rhythmdb-import-job.h"
+#include "rhythmdb-entry-type.h"
 #include "rb-util.h"
 #include "rb-file-helpers.h"
 #include "rb-marshal.h"
 #include "rb-debug.h"
+#include "rb-missing-plugins.h"
 
 enum
 {
@@ -63,13 +65,16 @@ struct _RhythmDBImportJobPrivate
 	int		imported;
 	GHashTable	*outstanding;
 	RhythmDB	*db;
-	RhythmDBEntryType entry_type;
-	RhythmDBEntryType ignore_type;
-	RhythmDBEntryType error_type;
+	RhythmDBEntryType *entry_type;
+	RhythmDBEntryType *ignore_type;
+	RhythmDBEntryType *error_type;
 	GStaticMutex    lock;
 	GSList		*uri_list;
 	gboolean	started;
 	GCancellable    *cancel;
+
+	GSList		*retry_entries;
+	gboolean	retried;
 
 	int		status_changed_id;
 	gboolean	scan_complete;
@@ -94,9 +99,9 @@ G_DEFINE_TYPE (RhythmDBImportJob, rhythmdb_import_job, G_TYPE_OBJECT)
  * @db: the #RhythmDB object
  * @entry_type: the #RhythmDBEntryType to use for normal entries
  * @ignore_type: the #RhythmDBEntryType to use for ignored files
- *   (or RHYTHMDB_ENTRY_TYPE_INVALID to not create ignore entries)
+ *   (or NULL to not create ignore entries)
  * @error_type: the #RhythmDBEntryType to use for import error
- *   entries (or RHYTHMDB_ENTRY_TYPE_INVALID for none)
+ *   entries (or NULL for none)
  *
  * Creates a new import job with the specified entry types.
  * Before starting the job, the caller must add one or more
@@ -106,9 +111,9 @@ G_DEFINE_TYPE (RhythmDBImportJob, rhythmdb_import_job, G_TYPE_OBJECT)
  */
 RhythmDBImportJob *
 rhythmdb_import_job_new (RhythmDB *db,
-			 RhythmDBEntryType entry_type,
-			 RhythmDBEntryType ignore_type,
-			 RhythmDBEntryType error_type)
+			 RhythmDBEntryType *entry_type,
+			 RhythmDBEntryType *ignore_type,
+			 RhythmDBEntryType *error_type)
 {
 	GObject *obj;
 
@@ -139,13 +144,61 @@ rhythmdb_import_job_add_uri (RhythmDBImportJob *job, const char *uri)
 	g_static_mutex_unlock (&job->priv->lock);
 }
 
+static void
+missing_plugins_retry_cb (gpointer instance, gboolean installed, RhythmDBImportJob *job)
+{
+	GSList *retry = NULL;
+	GSList *i;
+
+	g_static_mutex_lock (&job->priv->lock);
+	g_assert (job->priv->retried == FALSE);
+	if (installed == FALSE) {
+		rb_debug ("plugin installation was not successful; job complete");
+		g_signal_emit (job, signals[COMPLETE], 0, job->priv->total);
+	} else {
+		job->priv->retried = TRUE;
+
+		/* reset the job state to just show the retry information */
+		job->priv->total = g_slist_length (job->priv->retry_entries);
+		rb_debug ("plugin installation was successful, retrying %d entries", job->priv->total);
+		job->priv->imported = 0;
+
+		/* remove the import error entries and build the list of URIs to retry */
+		for (i = job->priv->retry_entries; i != NULL; i = i->next) {
+			RhythmDBEntry *entry = (RhythmDBEntry *)i->data;
+			char *uri;
+
+			uri = rhythmdb_entry_dup_string (entry, RHYTHMDB_PROP_LOCATION);
+			rhythmdb_entry_delete (job->priv->db, entry);
+
+			g_hash_table_insert (job->priv->outstanding, g_strdup (uri), GINT_TO_POINTER (1));
+			retry = g_slist_prepend (retry, uri);
+		}
+		rhythmdb_commit (job->priv->db);
+		retry = g_slist_reverse (retry);
+	}
+	g_static_mutex_unlock (&job->priv->lock);
+
+	for (i = retry; i != NULL; i = i->next) {
+		char *uri = (char *)i->data;
+
+		rhythmdb_add_uri_with_types (job->priv->db,
+					     uri,
+					     job->priv->entry_type,
+					     job->priv->ignore_type,
+					     job->priv->error_type);
+	}
+
+	rb_slist_deep_free (retry);
+}
+
 static gboolean
 emit_status_changed (RhythmDBImportJob *job)
 {
 	g_static_mutex_lock (&job->priv->lock);
 	job->priv->status_changed_id = 0;
 
-	rb_debug ("emitting status changed: %d/%d", job->priv->total, job->priv->imported);
+	rb_debug ("emitting status changed: %d/%d", job->priv->imported, job->priv->total);
 	g_signal_emit (job, signals[STATUS_CHANGED], 0, job->priv->total, job->priv->imported);
 
 	/* temporary ref while emitting this signal as we're expecting the caller
@@ -153,8 +206,51 @@ emit_status_changed (RhythmDBImportJob *job)
 	 */
 	g_object_ref (job);
 	if (job->priv->scan_complete && job->priv->imported >= job->priv->total) {
-		rb_debug ("emitting job complete");
-		g_signal_emit (job, signals[COMPLETE], 0, job->priv->total);
+
+		if (job->priv->retry_entries != NULL && job->priv->retried == FALSE) {
+			gboolean processing = FALSE;
+			char **details = NULL;
+			GClosure *retry;
+			GSList *l;
+			int i;
+
+			/* gather missing plugin details etc. */
+			i = 0;
+			for (l = job->priv->retry_entries; l != NULL; l = l->next) {
+				RhythmDBEntry *entry;
+				char **bits;
+				int j;
+
+				entry = (RhythmDBEntry *)l->data;
+				bits = g_strsplit (rhythmdb_entry_get_string (entry, RHYTHMDB_PROP_COMMENT), "\n", 0);
+				for (j = 0; bits[j] != NULL; j++) {
+					if (rb_str_in_strv (bits[j], (const char **)details) == FALSE) {
+						details = g_realloc (details, sizeof (char *) * (i+2));
+						details[i++] = g_strdup (bits[j]);
+						details[i] = NULL;
+					}
+				}
+				g_strfreev (bits);
+			}
+
+			retry = g_cclosure_new ((GCallback) missing_plugins_retry_cb,
+						g_object_ref (job),
+						(GClosureNotify)g_object_unref);
+			g_closure_set_marshal (retry, g_cclosure_marshal_VOID__BOOLEAN);
+
+			processing = rb_missing_plugins_install ((const char **)details, FALSE, retry);
+			g_strfreev (details);
+			if (processing) {
+				rb_debug ("plugin installation is in progress");
+			} else {
+				rb_debug ("no plugin installation attempted; job complete");
+				g_signal_emit (job, signals[COMPLETE], 0, job->priv->total);
+			}
+			g_closure_sink (retry);
+		} else {
+			rb_debug ("emitting job complete");
+			g_signal_emit (job, signals[COMPLETE], 0, job->priv->total);
+		}
 	}
 	g_static_mutex_unlock (&job->priv->lock);
 	g_object_unref (job);
@@ -276,7 +372,9 @@ rhythmdb_import_job_get_total (RhythmDBImportJob *job)
  * rhythmdb_import_job_get_imported:
  * @job: the #RhythmDBImportJob
  *
- * Return value: the number of files processed so far 
+ * Returns the number of files processed by the import job so far.
+ *
+ * Return value: file count
  */
 int
 rhythmdb_import_job_get_imported (RhythmDBImportJob *job)
@@ -288,7 +386,9 @@ rhythmdb_import_job_get_imported (RhythmDBImportJob *job)
  * rhythmdb_import_job_scan_complete:
  * @job: the #RhythmDBImportJob
  *
- * Return value: TRUE if the directory scan is complete
+ * Returns whether the directory scan phase of the import job is complete.
+ *
+ * Return value: TRUE if complete
  */
 gboolean
 rhythmdb_import_job_scan_complete (RhythmDBImportJob *job)
@@ -300,7 +400,9 @@ rhythmdb_import_job_scan_complete (RhythmDBImportJob *job)
  * rhythmdb_import_job_complete:
  * @job: the #RhythmDBImportJob
  *
- * Return value: TRUE if the import job is complete.
+ * Returns whether the import job is complete.
+ *
+ * Return value: TRUE if complete.
  */
 gboolean
 rhythmdb_import_job_complete (RhythmDBImportJob *job)
@@ -339,9 +441,19 @@ entry_added_cb (RhythmDB *db,
 	ours = g_hash_table_remove (job->priv->outstanding, uri);
 
 	if (ours) {
+		const char *details;
+
 		job->priv->imported++;
 		rb_debug ("got entry %s; %d now imported", uri, job->priv->imported);
 		g_signal_emit (job, signals[ENTRY_ADDED], 0, entry);
+
+		/* if it's an import error with missing plugins, add it to the retry list */
+		details = rhythmdb_entry_get_string (entry, RHYTHMDB_PROP_COMMENT);
+		if (rhythmdb_entry_get_entry_type (entry) == job->priv->error_type &&
+		    (details != NULL && details[0] != '\0')) {
+			rb_debug ("entry %s is an import error with missing plugin details: %s", uri, details);
+			job->priv->retry_entries = g_slist_prepend (job->priv->retry_entries, rhythmdb_entry_ref (entry));
+		}
 
 		if (job->priv->status_changed_id == 0) {
 			job->priv->status_changed_id = g_idle_add ((GSourceFunc) emit_status_changed, job);
@@ -380,13 +492,13 @@ impl_set_property (GObject *object,
 					 job, 0);
 		break;
 	case PROP_ENTRY_TYPE:
-		job->priv->entry_type = g_value_get_boxed (value);
+		job->priv->entry_type = g_value_get_object (value);
 		break;
 	case PROP_IGNORE_TYPE:
-		job->priv->ignore_type = g_value_get_boxed (value);
+		job->priv->ignore_type = g_value_get_object (value);
 		break;
 	case PROP_ERROR_TYPE:
-		job->priv->error_type = g_value_get_boxed (value);
+		job->priv->error_type = g_value_get_object (value);
 		break;
 	default:
 		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -407,13 +519,13 @@ impl_get_property (GObject *object,
 		g_value_set_object (value, job->priv->db);
 		break;
 	case PROP_ENTRY_TYPE:
-		g_value_set_boxed (value, job->priv->entry_type);
+		g_value_set_object (value, job->priv->entry_type);
 		break;
 	case PROP_IGNORE_TYPE:
-		g_value_set_boxed (value, job->priv->ignore_type);
+		g_value_set_object (value, job->priv->ignore_type);
 		break;
 	case PROP_ERROR_TYPE:
-		g_value_set_boxed (value, job->priv->error_type);
+		g_value_set_object (value, job->priv->error_type);
 		break;
 	default:
 		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -445,10 +557,6 @@ impl_finalize (GObject *object)
 	
 	g_hash_table_destroy (job->priv->outstanding);
 
-	g_boxed_free (RHYTHMDB_TYPE_ENTRY_TYPE, job->priv->entry_type);
-	g_boxed_free (RHYTHMDB_TYPE_ENTRY_TYPE, job->priv->ignore_type);
-	g_boxed_free (RHYTHMDB_TYPE_ENTRY_TYPE, job->priv->error_type);
-	
 	rb_slist_deep_free (job->priv->uri_list);
 
 	g_static_mutex_free (&job->priv->lock);
@@ -469,32 +577,32 @@ rhythmdb_import_job_class_init (RhythmDBImportJobClass *klass)
 	g_object_class_install_property (object_class,
 					 PROP_DB,
 					 g_param_spec_object ("db",
-						 	      "db",
+							      "db",
 							      "RhythmDB object",
 							      RHYTHMDB_TYPE,
 							      G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
 
 	g_object_class_install_property (object_class,
 					 PROP_ENTRY_TYPE,
-					 g_param_spec_boxed ("entry-type",
-						 	     "Entry type",
-							     "Entry type to use for entries added by this job",
-							     RHYTHMDB_TYPE_ENTRY_TYPE,
-							     G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
+					 g_param_spec_object ("entry-type",
+							      "Entry type",
+							      "Entry type to use for entries added by this job",
+							      RHYTHMDB_TYPE_ENTRY_TYPE,
+							      G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
 	g_object_class_install_property (object_class,
 					 PROP_IGNORE_TYPE,
-					 g_param_spec_boxed ("ignore-type",
-						 	     "Ignored entry type",
-							     "Entry type to use for ignored entries added by this job",
-							     RHYTHMDB_TYPE_ENTRY_TYPE,
-							     G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
+					 g_param_spec_object ("ignore-type",
+							      "Ignored entry type",
+							      "Entry type to use for ignored entries added by this job",
+							      RHYTHMDB_TYPE_ENTRY_TYPE,
+							      G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
 	g_object_class_install_property (object_class,
 					 PROP_ERROR_TYPE,
-					 g_param_spec_boxed ("error-type",
-						 	     "Error entry type",
-							     "Entry type to use for import error entries added by this job",
-							     RHYTHMDB_TYPE_ENTRY_TYPE,
-							     G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
+					 g_param_spec_object ("error-type",
+							      "Error entry type",
+							      "Entry type to use for import error entries added by this job",
+							      RHYTHMDB_TYPE_ENTRY_TYPE,
+							      G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
 
 	/**
 	 * RhythmDBImportJob::entry-added:
@@ -565,4 +673,3 @@ rhythmdb_import_job_class_init (RhythmDBImportJobClass *klass)
 
 	g_type_class_add_private (klass, sizeof (RhythmDBImportJobPrivate));
 }
-

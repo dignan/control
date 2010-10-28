@@ -48,6 +48,8 @@ typedef struct {
 		SET_DEVICE_NAME,
 		THREAD_CALLBACK,
 
+		CREATE_FOLDER,
+
 		ADD_TO_ALBUM,
 		REMOVE_FROM_ALBUM,
 		SET_ALBUM_IMAGE,
@@ -61,11 +63,13 @@ typedef struct {
 	LIBMTP_raw_device_t *raw_device;
 	LIBMTP_track_t *track;
 	uint32_t track_id;
+	uint32_t folder_id;
 	uint32_t storage_id;
 	char *album;
 	char *filename;
 	GdkPixbuf *image;
 	char *name;
+	char **path;
 
 	gpointer callback;
 	gpointer user_data;
@@ -80,6 +84,8 @@ task_name (RBMtpThreadTask *task)
 	case CLOSE_DEVICE:	return g_strdup ("close device");
 	case SET_DEVICE_NAME:	return g_strdup_printf ("set device name to %s", task->name);
 	case THREAD_CALLBACK:	return g_strdup ("thread callback");
+
+	case CREATE_FOLDER:	return g_strdup_printf ("create folder %s", task->path[g_strv_length (task->path)-1]);
 
 	case ADD_TO_ALBUM:	return g_strdup_printf ("add track %u to album %s", task->track_id, task->album);
 	case REMOVE_FROM_ALBUM:	return g_strdup_printf ("remove track %u from album %s", task->track_id, task->album);
@@ -114,6 +120,7 @@ destroy_task (RBMtpThreadTask *task)
 	g_free (task->album);
 	g_free (task->filename);
 	g_free (task->name);
+	g_strfreev (task->path);
 
 	if (task->image) {
 		g_object_unref (task->image);
@@ -141,21 +148,100 @@ static void
 open_device (RBMtpThread *thread, RBMtpThreadTask *task)
 {
 	RBMtpOpenCallback cb = task->callback;
+	int retry;
 
 	/* open the device */
-	thread->device = LIBMTP_Open_Raw_Device (task->raw_device);
-	if (thread->device == NULL) {
-		/* hm. any error information we can give here? */
-		/* maybe retry a few times since apparently that can help? */
-		cb (NULL, task->user_data);
-		return;
+	rb_debug ("attempting to open device");
+	for (retry = 0; retry < 5; retry++) {
+		if (retry > 0) {
+			/* sleep a while before trying again */
+			g_usleep (G_USEC_PER_SEC);
+		}
+
+		thread->device = LIBMTP_Open_Raw_Device (task->raw_device);
+		if (thread->device != NULL) {
+			break;
+		}
+
+		rb_debug ("attempt %d failed..", retry+1);
 	}
 
 	cb (thread->device, task->user_data);
 }
 
+static void
+create_folder (RBMtpThread *thread, RBMtpThreadTask *task)
+{
+	RBMtpCreateFolderCallback cb = task->callback;
+	LIBMTP_folder_t *folders;
+	LIBMTP_folder_t *f;
+	LIBMTP_folder_t *target = NULL;
+	uint32_t folder_id;
+	uint32_t storage_id;
+	int i;
+
+	folders = LIBMTP_Get_Folder_List (thread->device);
+	if (folders == NULL) {
+		rb_debug ("unable to get folder list");
+		rb_mtp_thread_report_errors (thread, FALSE);
+		cb (0, task->user_data);
+		return;
+	}
+
+	/* first find the default music folder */
+	f = LIBMTP_Find_Folder (folders, thread->device->default_music_folder);
+	if (f == NULL) {
+		rb_debug ("unable to find default music folder");
+		cb (0, task->user_data);
+		LIBMTP_destroy_folder_t (folders);
+		return;
+	}
+	storage_id = f->storage_id;
+	folder_id = f->folder_id;
+
+	/* descend through the folder tree, following the path */
+	i = 0;
+	while (task->path[i] != NULL) {
+
+		/* look for a folder at this level with the same name as the
+		 * next path component
+		 */
+		target = f->child;
+		while (target != NULL) {
+			if (g_strcmp0 (target->name, task->path[i]) == 0) {
+				rb_debug ("found path element %d: %s", i, target->name);
+				break;
+			}
+			target = target->sibling;
+		}
+
+		if (target == NULL) {
+			rb_debug ("path element %d (%s) not found", i, task->path[i]);
+			break;
+		}
+		f = target;
+		folder_id = f->folder_id;
+		i++;
+	}
+
+	/* now create any path elements that don't already exist */
+	while (task->path[i] != NULL) {
+		folder_id = LIBMTP_Create_Folder (thread->device, task->path[i], folder_id, storage_id);
+		if (folder_id == 0) {
+			rb_debug ("couldn't create path element %d: %s", i, task->path[i]);
+			rb_mtp_thread_report_errors (thread, FALSE);
+			break;
+		}
+		rb_debug ("created path element %d: %s with folder ID %u", i, task->path[i], folder_id);
+		i++;
+	}
+
+	cb (folder_id, task->user_data);
+	LIBMTP_destroy_folder_t (folders);
+}
+
 static LIBMTP_album_t *
-add_track_to_album (RBMtpThread *thread, const char *album_name, uint32_t track_id, uint32_t storage_id, gboolean *new_album)
+add_track_to_album (RBMtpThread *thread, const char *album_name, uint32_t track_id, uint32_t folder_id, uint32_t storage_id, gboolean *new_album)
 {
 	LIBMTP_album_t *album;
 
@@ -180,6 +266,7 @@ add_track_to_album (RBMtpThread *thread, const char *album_name, uint32_t track_
 		album->no_tracks = 1;
 		album->tracks = malloc (sizeof(uint32_t));
 		album->tracks[0] = track_id;
+		album->parent_id = folder_id;
 		album->storage_id = storage_id;
 
 		rb_debug ("creating new album (%s) for track ID %d", album->name, track_id);
@@ -216,7 +303,7 @@ add_track_to_album_and_update (RBMtpThread *thread, RBMtpThreadTask *task)
 	LIBMTP_album_t *album;
 	gboolean new_album = FALSE;
 
-	album = add_track_to_album (thread, task->album, task->track_id, task->storage_id, &new_album);
+	album = add_track_to_album (thread, task->album, task->track_id, task->folder_id, task->storage_id, &new_album);
 	write_album_to_device (thread, album, new_album);
 }
 
@@ -350,7 +437,7 @@ get_track_list (RBMtpThread *thread, RBMtpThreadTask *task)
 		for (track = tracks; track != NULL; track = track->next) {
 			if (track->album != NULL) {
 				gboolean new_album = FALSE;
-				album = add_track_to_album (thread, track->album, track->item_id, track->storage_id, &new_album);
+				album = add_track_to_album (thread, track->album, track->item_id, track->parent_id, track->storage_id, &new_album);
 				g_hash_table_insert (update_albums, album, GINT_TO_POINTER (new_album));
 			}
 		}
@@ -509,9 +596,15 @@ upload_track (RBMtpThread *thread, RBMtpThreadTask *task)
 	if (LIBMTP_Send_Track_From_File (thread->device, task->filename, task->track, NULL, NULL)) {
 		stack = LIBMTP_Get_Errorstack (thread->device);
 		rb_debug ("unable to send track: %s", stack->error_text);
-		error = g_error_new (RB_MTP_THREAD_ERROR, RB_MTP_THREAD_ERROR_SEND_TRACK,
-				     _("Unable to send file to MTP device: %s"),
-				     stack->error_text);
+
+		if (stack->errornumber == LIBMTP_ERROR_STORAGE_FULL) {
+			error = g_error_new (RB_MTP_THREAD_ERROR, RB_MTP_THREAD_ERROR_NO_SPACE,
+					     _("No space left on MTP device"));
+		} else {
+			error = g_error_new (RB_MTP_THREAD_ERROR, RB_MTP_THREAD_ERROR_SEND_TRACK,
+					     _("Unable to send file to MTP device: %s"),
+					     stack->error_text);
+		}
 		LIBMTP_Clear_Errorstack (thread->device);
 		task->track->item_id = 0;		/* is this actually an invalid item ID? */
 	}
@@ -545,6 +638,10 @@ run_task (RBMtpThread *thread, RBMtpThreadTask *task)
 			RBMtpThreadCallback cb = (RBMtpThreadCallback)task->callback;
 			cb (thread->device, task->user_data);
 		}
+		break;
+
+	case CREATE_FOLDER:
+		create_folder (thread, task);
 		break;
 
 	case ADD_TO_ALBUM:
@@ -633,10 +730,26 @@ rb_mtp_thread_set_device_name (RBMtpThread *thread, const char *name)
 }
 
 void
+rb_mtp_thread_create_folder (RBMtpThread *thread,
+			     const char **path,
+			     RBMtpCreateFolderCallback func,
+			     gpointer data,
+			     GDestroyNotify destroy_data)
+{
+	RBMtpThreadTask *task = create_task (CREATE_FOLDER);
+	task->path = g_strdupv ((char **)path);
+	task->callback = func;
+	task->user_data = data;
+	task->destroy_data = destroy_data;
+	queue_task (thread, task);
+}
+
+void
 rb_mtp_thread_add_to_album (RBMtpThread *thread, LIBMTP_track_t *track, const char *album)
 {
 	RBMtpThreadTask *task = create_task (ADD_TO_ALBUM);
 	task->track_id = track->item_id;
+	task->folder_id = track->parent_id;
 	task->storage_id = track->storage_id;
 	task->album = g_strdup (album);
 	queue_task (thread, task);
@@ -819,9 +932,9 @@ rb_mtp_thread_error_get_type (void)
 
 	if (etype == 0)	{
 		static const GEnumValue values[] = {
-			ENUM_ENTRY (RB_MTP_THREAD_ERROR_NO_SPACE, "Not enough space to download track"),
-			ENUM_ENTRY (RB_MTP_THREAD_ERROR_TEMPFILE, "Unable to create temporary file"),
-			ENUM_ENTRY (RB_MTP_THREAD_ERROR_GET_TRACK, "Unable to retrieve track"),
+			ENUM_ENTRY (RB_MTP_THREAD_ERROR_NO_SPACE, "no-space"),
+			ENUM_ENTRY (RB_MTP_THREAD_ERROR_TEMPFILE, "tempfile-failed"),
+			ENUM_ENTRY (RB_MTP_THREAD_ERROR_GET_TRACK, "track-get-failed"),
 			{ 0, 0, 0 }
 		};
 

@@ -1,18 +1,29 @@
 noinst_LTLIBRARIES = librbpodcast.la librbpodcast_parse.la
 
+podcastincludedir = $(includedir)/rhythmbox/podcast
+podcastinclude_HEADERS =				\
+	rb-podcast-entry-types.h			\
+	rb-podcast-parse.h				\
+	rb-podcast-manager.h
+
+
 librbpodcast_parse_la_SOURCES = 			\
 	rb-podcast-parse.c				\
 	rb-podcast-parse.h
 
 librbpodcast_la_SOURCES =				\
+	$(podcastinclude_HEADERS)			\
 	rb-feed-podcast-properties-dialog.c		\
 	rb-feed-podcast-properties-dialog.h		\
 	rb-podcast-properties-dialog.c			\
 	rb-podcast-properties-dialog.h			\
+	rb-podcast-main-source.c			\
+	rb-podcast-main-source.h			\
+	rb-podcast-source.c				\
+	rb-podcast-source.h				\
 	rb-podcast-parse.c				\
-	rb-podcast-parse.h				\
 	rb-podcast-manager.c				\
-	rb-podcast-manager.h
+	rb-podcast-entry-types.c
 
 noinst_PROGRAMS = test-podcast-parse
 test_podcast_parse_SOURCES =				\
@@ -32,9 +43,10 @@ AM_CFLAGS =						\
 	-I$(top_srcdir)/widgets				\
 	-I$(top_srcdir)/shell				\
 	-I$(top_srcdir)/metadata			\
-	-I$(top_srcdir)/library				\
+	-I$(top_srcdir)/sources				\
 	-I$(top_builddir)/lib 				\
 	$(RHYTHMBOX_CFLAGS)				\
+	$(WEBKIT_CFLAGS)				\
 	$(TOTEM_PLPARSER_CFLAGS)
 
 librbpodcast_la_LDFLAGS = -export-dynamic

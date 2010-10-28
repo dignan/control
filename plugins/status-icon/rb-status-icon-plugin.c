@@ -37,6 +37,8 @@
 
 #include <X11/Xatom.h>
 
+#include <pango/pango-bidi-type.h>
+
 #ifdef HAVE_NOTIFY
 #include <libnotify/notify.h>
 #endif
@@ -50,17 +52,14 @@
 #include "rb-stock-icons.h"
 #include "eel-gconf-extensions.h"
 #include "rb-builder-helpers.h"
+#include "gseal-gtk-compat.h"
 
-#if defined(USE_GTK_STATUS_ICON)
 #include "rb-tray-icon-gtk.h"
-#else
-#include "rb-tray-icon.h"
-#endif
 
 #define TRAY_ICON_DEFAULT_TOOLTIP _("Music Player")
 
 #define TOOLTIP_IMAGE_BORDER_WIDTH	1
-#define PLAYING_ENTRY_NOTIFY_TIME 	4
+#define PLAYING_ENTRY_NOTIFY_TIME	4
 
 #define CONF_PLUGIN_SETTINGS	"/apps/rhythmbox/plugins/status-icon"
 #define CONF_NOTIFICATION_MODE	CONF_PLUGIN_SETTINGS "/notification-mode"
@@ -117,10 +116,11 @@ struct _RBStatusIconPluginPrivate
 	gboolean tooltips_suppressed;
 
 	/* notification data */
-	GdkPixbuf *notify_pixbuf;
+	gchar *notify_art_path;
 #ifdef HAVE_NOTIFY
 	NotifyNotification *notification;
 	gboolean notify_supports_actions;
+	gboolean notify_supports_icon_buttons;
 #endif
 
 	GtkWidget *config_dialog;
@@ -353,20 +353,37 @@ notification_next_cb (NotifyNotification *notification,
 }
 
 static void
+notification_pause_cb (NotifyNotification *notification,
+		       const char *action,
+		       RBStatusIconPlugin *plugin)
+{
+	rb_debug ("notification action: %s", action);
+	rb_shell_player_pause (plugin->priv->shell_player, NULL);
+}
+
+static void
+notification_previous_cb (NotifyNotification *notification,
+			  const char *action,
+			  RBStatusIconPlugin *plugin)
+{
+	rb_debug ("notification action: %s", action);
+	rb_shell_player_do_previous (plugin->priv->shell_player, NULL);
+}
+
+static void
 do_notify (RBStatusIconPlugin *plugin,
 	   guint timeout,
 	   const char *primary,
 	   const char *secondary,
-	   GdkPixbuf *pixbuf,
+	   const char *image_uri,
 	   gboolean show_action)
 {
-	const char *icon_name;
 	GError *error = NULL;
 
 	if (notify_is_initted () == FALSE) {
 		GList *caps;
 
-		if (notify_init ("rhythmbox") == FALSE) {
+		if (notify_init ("Rhythmbox") == FALSE) {
 			g_warning ("libnotify initialization failed");
 			return;
 		}
@@ -376,6 +393,11 @@ do_notify (RBStatusIconPlugin *plugin,
 		if (g_list_find_custom (caps, "actions", (GCompareFunc)g_strcmp0) != NULL) {
 			rb_debug ("notification server supports actions");
 			plugin->priv->notify_supports_actions = TRUE;
+
+			if (g_list_find_custom (caps, "x-gnome-icon-buttons", (GCompareFunc)g_strcmp0) != NULL) {
+				rb_debug ("notifiction server supports icon buttons");
+				plugin->priv->notify_supports_icon_buttons = TRUE;
+			}
 		} else {
 			rb_debug ("notification server does not support actions");
 		}
@@ -390,13 +412,8 @@ do_notify (RBStatusIconPlugin *plugin,
 	if (secondary == NULL)
 		secondary = "";
 
-	if (pixbuf == NULL)
-		icon_name = RB_APP_ICON;
-	else
-		icon_name = NULL;
-
 	if (plugin->priv->notification == NULL) {
-		plugin->priv->notification = notify_notification_new (primary, secondary, icon_name, NULL);
+		plugin->priv->notification = notify_notification_new (primary, secondary, RB_APP_ICON, NULL);
 
 		g_signal_connect_object (plugin->priv->notification,
 					 "closed",
@@ -404,7 +421,7 @@ do_notify (RBStatusIconPlugin *plugin,
 					 plugin, 0);
 	} else {
 		notify_notification_clear_hints (plugin->priv->notification);
-		notify_notification_update (plugin->priv->notification, primary, secondary, icon_name);
+		notify_notification_update (plugin->priv->notification, primary, secondary, RB_APP_ICON);
 	}
 
 	switch (plugin->priv->icon_mode) {
@@ -424,15 +441,32 @@ do_notify (RBStatusIconPlugin *plugin,
 
 	notify_notification_set_timeout (plugin->priv->notification, timeout);
 
-	if (pixbuf != NULL) {
+	if (image_uri != NULL) {
 		notify_notification_clear_hints (plugin->priv->notification);
-		notify_notification_set_icon_from_pixbuf (plugin->priv->notification, pixbuf);
+		notify_notification_set_hint_string (plugin->priv->notification,
+						     "image_path",
+						     image_uri);
 	}
 
 	notify_notification_clear_actions (plugin->priv->notification);
 	if (show_action && plugin->priv->notify_supports_actions) {
+		if (plugin->priv->notify_supports_icon_buttons) {
+			notify_notification_add_action (plugin->priv->notification,
+							"media-skip-backward",
+							_("Previous"),
+							(NotifyActionCallback) notification_previous_cb,
+							plugin,
+							NULL);
+			notify_notification_add_action (plugin->priv->notification,
+							"media-playback-pause",
+							_("Pause"),
+							(NotifyActionCallback) notification_pause_cb,
+							plugin,
+							NULL);
+		}
+
 		notify_notification_add_action (plugin->priv->notification,
-						"media-next",
+						"media-skip-forward",
 						_("Next"),
 						(NotifyActionCallback) notification_next_cb,
 						plugin,
@@ -506,18 +540,23 @@ notify_playing_entry (RBStatusIconPlugin *plugin, gboolean requested)
 		   PLAYING_ENTRY_NOTIFY_TIME * 1000,
 		   plugin->priv->current_title,
 		   plugin->priv->current_album_and_artist,
-		   plugin->priv->notify_pixbuf,
+		   plugin->priv->notify_art_path,
 		   TRUE);
 }
 
 static void
-notify_custom (RBStatusIconPlugin *plugin, guint timeout, const char *primary, const char *secondary, GdkPixbuf *pixbuf, gboolean requested)
+notify_custom (RBStatusIconPlugin *plugin,
+	       guint timeout,
+	       const char *primary,
+	       const char *secondary,
+	       const char *image_uri,
+	       gboolean requested)
 {
 	if (requested == FALSE && should_notify (plugin) == FALSE) {
 		return;
 	}
 
-	do_notify (plugin, timeout, primary, secondary, pixbuf, FALSE);
+	do_notify (plugin, timeout, primary, secondary, image_uri, FALSE);
 }
 
 static void
@@ -542,7 +581,7 @@ notify_playing_entry (RBStatusIconPlugin *plugin, gboolean requested)
 }
 
 static void
-notify_custom (RBStatusIconPlugin *plugin, guint timeout, const char *primary, const char *secondary, GdkPixbuf *pixbuf, gboolean requested)
+notify_custom (RBStatusIconPlugin *plugin, guint timeout, const char *primary, const char *secondary, const char *image_uri, gboolean requested)
 {
 }
 
@@ -560,9 +599,15 @@ shell_notify_playing_cb (RBShell *shell, gboolean requested, RBStatusIconPlugin 
 }
 
 static void
-shell_notify_custom_cb (RBShell *shell, guint timeout, const char *primary, const char *secondary, GdkPixbuf *pixbuf, gboolean requested, RBStatusIconPlugin *plugin)
+shell_notify_custom_cb (RBShell *shell,
+			guint timeout,
+			const char *primary,
+			const char *secondary,
+			const char *image_uri,
+			gboolean requested,
+			RBStatusIconPlugin *plugin)
 {
-	notify_custom (plugin, timeout, primary, secondary, pixbuf, requested);
+	notify_custom (plugin, timeout, primary, secondary, image_uri, requested);
 }
 
 /* tooltips */
@@ -643,6 +688,50 @@ rb_status_icon_plugin_set_tooltip (GtkWidget        *widget,
 /* information on current track */
 
 static void
+get_artist_album_templates (const char *artist,
+			    const char *album,
+			    const char **artist_template,
+			    const char **album_template)
+{
+	PangoDirection tag_dir;
+	PangoDirection template_dir;
+
+	/* Translators: by Artist */
+	*artist_template = _("by <i>%s</i>");
+	/* Translators: from Album */
+	*album_template = _("from <i>%s</i>");
+
+	/* find the direction (left-to-right or right-to-left) of the
+	 * track's tags and the localized templates
+	 */
+	if (artist != NULL && artist[0] != '\0') {
+		tag_dir = pango_find_base_dir (artist, -1);
+		template_dir = pango_find_base_dir (*artist_template, -1);
+	} else if (album != NULL && album[0] != '\0') {
+		tag_dir = pango_find_base_dir (album, -1);
+		template_dir = pango_find_base_dir (*album_template, -1);
+	} else {
+		return;
+	}
+
+	/* if the track's tags and the localized templates have a different
+	 * direction, switch to direction-neutral templates in order to improve
+	 * display.
+	 * text can have a neutral direction, this condition only applies when
+	 * both directions are defined and they are conflicting.
+	 * https://bugzilla.gnome.org/show_bug.cgi?id=609767
+	 */
+	if (((tag_dir == PANGO_DIRECTION_LTR) && (template_dir == PANGO_DIRECTION_RTL)) ||
+	    ((tag_dir == PANGO_DIRECTION_RTL) && (template_dir == PANGO_DIRECTION_LTR))) {
+		/* these strings should not be localized, they must be
+		 * locale-neutral and direction-neutral
+		 */
+		*artist_template = "<i>%s</i>";
+		*album_template = "/ <i>%s</i>";
+	}
+}
+
+static void
 update_current_playing_data (RBStatusIconPlugin *plugin, RhythmDBEntry *entry)
 {
 	GValue *value;
@@ -652,10 +741,15 @@ update_current_playing_data (RBStatusIconPlugin *plugin, RhythmDBEntry *entry)
 	char *title = NULL;
 	GString *secondary;
 
+	const char *artist_template = NULL;
+	const char *album_template = NULL;
+
 	g_free (plugin->priv->current_title);
 	g_free (plugin->priv->current_album_and_artist);
+	g_free (plugin->priv->notify_art_path);
 	plugin->priv->current_title = NULL;
 	plugin->priv->current_album_and_artist = NULL;
+	plugin->priv->notify_art_path = NULL;
 
 	if (entry == NULL)
 		return;
@@ -674,12 +768,6 @@ update_current_playing_data (RBStatusIconPlugin *plugin, RhythmDBEntry *entry)
 		artist = markup_escape (rhythmdb_entry_get_string (entry, RHYTHMDB_PROP_ARTIST));
 	}
 
-	if (artist != NULL && artist[0] != '\0') {
-		/* Translators: by Artist */
-		g_string_append_printf (secondary, _("by <i>%s</i>"), artist);
-	}
-	g_free (artist);
-
 	/* get album, preferring streaming song details */
 	value = rhythmdb_entry_request_extra_metadata (plugin->priv->db,
 						       entry,
@@ -692,12 +780,18 @@ update_current_playing_data (RBStatusIconPlugin *plugin, RhythmDBEntry *entry)
 		album = markup_escape (rhythmdb_entry_get_string (entry, RHYTHMDB_PROP_ALBUM));
 	}
 
+	get_artist_album_templates (artist, album, &artist_template, &album_template);
+
+	if (artist != NULL && artist[0] != '\0') {
+		g_string_append_printf (secondary, artist_template, artist);
+	}
+	g_free (artist);
+
 	if (album != NULL && album[0] != '\0') {
 		if (secondary->len != 0)
 			g_string_append_c (secondary, ' ');
 
-		/* Translators: from Album */
-		g_string_append_printf (secondary, _("from <i>%s</i>"), album);
+		g_string_append_printf (secondary, album_template, album);
 	}
 	g_free (album);
 
@@ -745,10 +839,6 @@ forget_pixbufs (RBStatusIconPlugin *plugin)
 		g_object_unref (plugin->priv->tooltip_pixbuf);
 		plugin->priv->tooltip_pixbuf = NULL;
 	}
-	if (plugin->priv->notify_pixbuf != NULL) {
-		g_object_unref (plugin->priv->notify_pixbuf);
-		plugin->priv->notify_pixbuf = NULL;
-	}
 }
 
 static void
@@ -781,14 +871,54 @@ is_playing_entry (RBStatusIconPlugin *plugin, RhythmDBEntry *entry)
 }
 
 static void
+db_art_uri_metadata_cb (RhythmDB *db,
+			RhythmDBEntry *entry,
+			const char *field,
+			GValue *metadata,
+			RBStatusIconPlugin *plugin)
+{
+	guint time;
+
+	if (is_playing_entry (plugin, entry) == FALSE)
+		return;
+
+	if (G_VALUE_HOLDS (metadata, G_TYPE_STRING)) {
+		const char *uri = g_value_get_string (metadata);
+		if (g_str_has_prefix (uri, "file://")) {
+			char *path = g_filename_from_uri (uri, NULL, NULL);
+			if (g_strcmp0 (path, plugin->priv->notify_art_path) != 0) {
+				g_free (plugin->priv->notify_art_path);
+				plugin->priv->notify_art_path = path;
+			} else {
+				/* same art URI, ignore it */
+				g_free (path);
+				return;
+			}
+		} else {
+			/* unsupported art URI, ignore it */
+			return;
+		}
+	} else {
+		g_free (plugin->priv->notify_art_path);
+		plugin->priv->notify_art_path = NULL;
+	}
+
+	if (rb_shell_player_get_playing_time (plugin->priv->shell_player, &time, NULL)) {
+		if (time < PLAYING_ENTRY_NOTIFY_TIME) {
+			notify_playing_entry (plugin, FALSE);
+		}
+	} else {
+		notify_playing_entry (plugin, FALSE);
+	}
+}
+
+static void
 db_art_metadata_cb (RhythmDB *db,
 		    RhythmDBEntry *entry,
 		    const char *field,
 		    GValue *metadata,
 		    RBStatusIconPlugin *plugin)
 {
-	guint time;
-
 	if (is_playing_entry (plugin, entry) == FALSE)
 		return;
 
@@ -805,19 +935,10 @@ db_art_metadata_cb (RhythmDB *db,
 
 			scaled = rb_scale_pixbuf_to_size (pixbuf, GTK_ICON_SIZE_DIALOG);
 			plugin->priv->tooltip_pixbuf = create_tooltip_pixbuf (scaled);
-			plugin->priv->notify_pixbuf = scaled;
 		}
-
-		/* probably keep the full size thing for notifications?  hmm. */
 	}
 
 	rb_tray_icon_trigger_tooltip_query (plugin->priv->tray_icon);
-
-	if (rb_shell_player_get_playing_time (plugin->priv->shell_player, &time, NULL)) {
-		if (time < PLAYING_ENTRY_NOTIFY_TIME) {
-			notify_playing_entry (plugin, FALSE);
-		}
-	}
 }
 
 static void
@@ -931,7 +1052,7 @@ close_to_tray (RBStatusIconPlugin *plugin)
 	/* set the window's icon geometry to match the icon */
 	rb_tray_icon_get_geom (plugin->priv->tray_icon,
 			       &x, &y, &width, &height);
-	if (GTK_WIDGET_REALIZED (window))
+	if (gtk_widget_get_realized (GTK_WIDGET (window)))
 		set_icon_geometry (gtk_widget_get_window (GTK_WIDGET (window)),
 				   x, y, width, height);
 
@@ -952,7 +1073,6 @@ visibility_changing_cb (RBShell *shell,
 			gboolean visible,
 			RBStatusIconPlugin *plugin)
 {
-
 	switch (plugin->priv->icon_mode) {
 	case ICON_NEVER:
 	case ICON_WITH_NOTIFY:
@@ -968,9 +1088,16 @@ visibility_changing_cb (RBShell *shell,
 	}
 
 	if (initial) {
-		/* restore visibility from gconf setting */
-		visible = eel_gconf_get_boolean (CONF_WINDOW_VISIBILITY);
-		rb_debug ("setting initial visibility %d from gconf", visible);
+		gboolean autostarted;
+		g_object_get (shell, "autostarted", &autostarted, NULL);
+		if (autostarted) {
+			/* restore visibility from gconf setting */
+			visible = eel_gconf_get_boolean (CONF_WINDOW_VISIBILITY) || eel_gconf_is_default (CONF_WINDOW_VISIBILITY);
+			rb_debug ("setting initial visibility %d from gconf", visible);
+		} else {
+			rb_debug ("ignoring stored visibility as we weren't autostarted");
+			visible = TRUE;
+		}
 		return visible;
 	}
 
@@ -1032,80 +1159,6 @@ store_window_visibility (RBStatusIconPlugin *plugin)
 		eel_gconf_set_boolean (CONF_WINDOW_VISIBILITY, visible);
 	}
 }
-
-#if !defined(USE_GTK_STATUS_ICON)
-
-/* EggTrayIcon helpers */
-
-#if 0
-static void
-tray_embedded_cb (GtkPlug *plug,
-		  gpointer data)
-{
-	/* FIXME - this doesn't work */
-	RBShell *shell = RB_SHELL (data);
-
-	rb_debug ("got embedded signal");
-
-	gdk_window_set_decorations (shell->priv->window->window,
-				    GDK_DECOR_ALL | GDK_DECOR_MINIMIZE | GDK_DECOR_MAXIMIZE);
-}
-#endif
-
-static gboolean
-tray_destroy_cb (GtkObject *object, RBStatusIconPlugin *plugin)
-{
-	if (plugin->priv->tray_icon) {
-		rb_debug ("caught destroy event for icon %p", object);
-		g_object_ref_sink (object);
-		plugin->priv->tray_icon = NULL;
-		rb_debug ("finished sinking tray");
-	}
-
-	rb_debug ("creating new icon");
-	plugin->priv->tray_icon = rb_tray_icon_new (plugin, plugin->priv->shell);
-	g_signal_connect_object (plugin->priv->tray_icon, "destroy", G_CALLBACK (tray_destroy_cb), plugin, 0);
-	/* g_signal_connect_object (plugin->priv->tray_icon, "embedded", G_CALLBACK (tray_embedded_cb), plugin, 0); */
-
-	rb_debug ("done creating new icon %p", plugin->priv->tray_icon);
-	return TRUE;
-}
-
-static void
-cleanup_status_icon (RBStatusIconPlugin *plugin)
-{
-	g_signal_handlers_disconnect_by_func (plugin->priv->tray_icon,
-					      G_CALLBACK (tray_destroy_cb),
-					      plugin);
-
-	gtk_widget_hide_all (GTK_WIDGET (plugin->priv->tray_icon));
-	gtk_widget_destroy (GTK_WIDGET (plugin->priv->tray_icon));
-}
-
-static void
-create_status_icon (RBStatusIconPlugin *plugin)
-{
-	tray_destroy_cb (NULL, plugin);
-}
-
-#else
-
-/* boring equivalents for GtkStatusIcon */
-
-static void
-create_status_icon (RBStatusIconPlugin *plugin)
-{
-	plugin->priv->tray_icon = rb_tray_icon_new (plugin, plugin->priv->shell_player);
-}
-
-static void
-cleanup_status_icon (RBStatusIconPlugin *plugin)
-{
-	g_object_unref (plugin->priv->tray_icon);
-}
-
-
-#endif
 
 /* preferences dialog and gconf stuff */
 
@@ -1325,6 +1378,8 @@ impl_activate (RBPlugin *bplugin,
 
 	g_signal_connect_object (plugin->priv->db, "entry_extra_metadata_notify::" RHYTHMDB_PROP_COVER_ART,
 				 G_CALLBACK (db_art_metadata_cb), plugin, 0);
+	g_signal_connect_object (plugin->priv->db, "entry_extra_metadata_notify::" RHYTHMDB_PROP_COVER_ART_URI,
+				 G_CALLBACK (db_art_uri_metadata_cb), plugin, 0);
 	g_signal_connect_object (plugin->priv->db, "entry_extra_metadata_notify::" RHYTHMDB_PROP_STREAM_SONG_TITLE,
 				 G_CALLBACK (db_stream_metadata_cb), plugin, 0);
 	g_signal_connect_object (plugin->priv->db, "entry_extra_metadata_notify::" RHYTHMDB_PROP_STREAM_SONG_ARTIST,
@@ -1348,7 +1403,7 @@ impl_activate (RBPlugin *bplugin,
 	plugin->priv->wheel_mode = eel_gconf_get_integer (CONF_MOUSE_WHEEL_MODE);
 
 	/* create status icon */
-	create_status_icon (plugin);
+	plugin->priv->tray_icon = rb_tray_icon_new (plugin, plugin->priv->shell_player);
 	update_status_icon_visibility (plugin, FALSE);
 
 	/* update everything in case we're already playing something */
@@ -1401,7 +1456,7 @@ impl_deactivate	(RBPlugin *bplugin,
 
 	/* remove icon */
 	if (plugin->priv->tray_icon != NULL) {
-		cleanup_status_icon (plugin);
+		g_object_unref (plugin->priv->tray_icon);
 		plugin->priv->tray_icon = NULL;
 	}
 
@@ -1416,6 +1471,7 @@ impl_deactivate	(RBPlugin *bplugin,
 
 	if (plugin->priv->db != NULL) {
 		g_signal_handlers_disconnect_by_func (plugin->priv->db, db_art_metadata_cb, plugin);
+		g_signal_handlers_disconnect_by_func (plugin->priv->db, db_art_uri_metadata_cb, plugin);
 		g_signal_handlers_disconnect_by_func (plugin->priv->db, db_stream_metadata_cb, plugin);
 
 		g_object_unref (plugin->priv->db);
@@ -1444,9 +1500,11 @@ impl_deactivate	(RBPlugin *bplugin,
 	g_free (plugin->priv->current_title);
 	g_free (plugin->priv->current_album_and_artist);
 	g_free (plugin->priv->tooltip_markup);
+	g_free (plugin->priv->notify_art_path);
 	plugin->priv->current_title = NULL;
 	plugin->priv->current_album_and_artist = NULL;
 	plugin->priv->tooltip_markup = NULL;
+	plugin->priv->notify_art_path = NULL;
 
 	forget_pixbufs (plugin);
 }

@@ -70,6 +70,7 @@ typedef struct
 		SETTINGS_DAEMON,
 		X_KEY_GRAB
 	} grab_type;
+	RBShell *shell;
 	RBShellPlayer *shell_player;
 	DBusGProxy *proxy;
 } RBMMKeysPlugin;
@@ -128,9 +129,19 @@ media_player_key_pressed (DBusGProxy *proxy,
 			rb_shell_player_set_playback_state (plugin->shell_player, !shuffle, repeat);
 		}
 	} else if (strcmp (key, "FastForward") == 0) {
-		rb_shell_player_seek (plugin->shell_player, FFWD_OFFSET);
+		rb_shell_player_seek (plugin->shell_player, FFWD_OFFSET, NULL);
 	} else if (strcmp (key, "Rewind") == 0) {
-		rb_shell_player_seek (plugin->shell_player, -RWD_OFFSET);
+		rb_shell_player_seek (plugin->shell_player, -RWD_OFFSET, NULL);
+	}
+}
+
+static void
+grab_call_notify (DBusGProxy *proxy, DBusGProxyCall *call, RBMMKeysPlugin *plugin)
+{
+	GError *error = NULL;
+	if (dbus_g_proxy_end_call (proxy, call, &error, G_TYPE_INVALID) == FALSE) {
+		g_warning ("Unable to grab media player keys: %s", error->message);
+		g_error_free (error);
 	}
 }
 
@@ -141,12 +152,14 @@ window_focus_cb (GtkWidget *window,
 {
 	rb_debug ("window got focus, re-grabbing media keys");
 
-	dbus_g_proxy_call (plugin->proxy,
-			   "GrabMediaPlayerKeys", NULL,
-			   G_TYPE_STRING, "Rhythmbox",
-			   G_TYPE_UINT, 0,
-			   G_TYPE_INVALID, G_TYPE_INVALID);
-
+	dbus_g_proxy_begin_call (plugin->proxy,
+				 "GrabMediaPlayerKeys",
+				 (DBusGProxyCallNotify) grab_call_notify,
+				 g_object_ref (plugin),
+				 (GDestroyNotify) g_object_unref,
+				 G_TYPE_STRING, "Rhythmbox",
+				 G_TYPE_UINT, 0,
+				 G_TYPE_INVALID);
 	return FALSE;
 }
 
@@ -156,37 +169,39 @@ static void
 grab_mmkey (int key_code,
 	    GdkWindow *root)
 {
+	Display *display;
 	gdk_error_trap_push ();
 
-	XGrabKey (GDK_DISPLAY (), key_code,
+	display = GDK_DISPLAY_XDISPLAY (gdk_display_get_default ());
+	XGrabKey (display, key_code,
 		  0,
 		  GDK_WINDOW_XID (root), True,
 		  GrabModeAsync, GrabModeAsync);
-	XGrabKey (GDK_DISPLAY (), key_code,
+	XGrabKey (display, key_code,
 		  Mod2Mask,
 		  GDK_WINDOW_XID (root), True,
 		  GrabModeAsync, GrabModeAsync);
-	XGrabKey (GDK_DISPLAY (), key_code,
+	XGrabKey (display, key_code,
 		  Mod5Mask,
 		  GDK_WINDOW_XID (root), True,
 		  GrabModeAsync, GrabModeAsync);
-	XGrabKey (GDK_DISPLAY (), key_code,
+	XGrabKey (display, key_code,
 		  LockMask,
 		  GDK_WINDOW_XID (root), True,
 		  GrabModeAsync, GrabModeAsync);
-	XGrabKey (GDK_DISPLAY (), key_code,
+	XGrabKey (display, key_code,
 		  Mod2Mask | Mod5Mask,
 		  GDK_WINDOW_XID (root), True,
 		  GrabModeAsync, GrabModeAsync);
-	XGrabKey (GDK_DISPLAY (), key_code,
+	XGrabKey (display, key_code,
 		  Mod2Mask | LockMask,
 		  GDK_WINDOW_XID (root), True,
 		  GrabModeAsync, GrabModeAsync);
-	XGrabKey (GDK_DISPLAY (), key_code,
+	XGrabKey (display, key_code,
 		  Mod5Mask | LockMask,
 		  GDK_WINDOW_XID (root), True,
 		  GrabModeAsync, GrabModeAsync);
-	XGrabKey (GDK_DISPLAY (), key_code,
+	XGrabKey (display, key_code,
 		  Mod2Mask | Mod5Mask | LockMask,
 		  GDK_WINDOW_XID (root), True,
 		  GrabModeAsync, GrabModeAsync);
@@ -201,16 +216,18 @@ static void
 ungrab_mmkey (int key_code,
 	      GdkWindow *root)
 {
+	Display *display;
 	gdk_error_trap_push ();
 
-	XUngrabKey (GDK_DISPLAY (), key_code, 0, GDK_WINDOW_XID (root));
-	XUngrabKey (GDK_DISPLAY (), key_code, Mod2Mask, GDK_WINDOW_XID (root));
-	XUngrabKey (GDK_DISPLAY (), key_code, Mod5Mask, GDK_WINDOW_XID (root));
-	XUngrabKey (GDK_DISPLAY (), key_code, LockMask, GDK_WINDOW_XID (root));
-	XUngrabKey (GDK_DISPLAY (), key_code, Mod2Mask | Mod5Mask, GDK_WINDOW_XID (root));
-	XUngrabKey (GDK_DISPLAY (), key_code, Mod2Mask | LockMask, GDK_WINDOW_XID (root));
-	XUngrabKey (GDK_DISPLAY (), key_code, Mod5Mask | LockMask, GDK_WINDOW_XID (root));
-	XUngrabKey (GDK_DISPLAY (), key_code, Mod2Mask | Mod5Mask | LockMask, GDK_WINDOW_XID (root));
+	display = GDK_DISPLAY_XDISPLAY (gdk_display_get_default ());
+	XUngrabKey (display, key_code, 0, GDK_WINDOW_XID (root));
+	XUngrabKey (display, key_code, Mod2Mask, GDK_WINDOW_XID (root));
+	XUngrabKey (display, key_code, Mod5Mask, GDK_WINDOW_XID (root));
+	XUngrabKey (display, key_code, LockMask, GDK_WINDOW_XID (root));
+	XUngrabKey (display, key_code, Mod2Mask | Mod5Mask, GDK_WINDOW_XID (root));
+	XUngrabKey (display, key_code, Mod2Mask | LockMask, GDK_WINDOW_XID (root));
+	XUngrabKey (display, key_code, Mod5Mask | LockMask, GDK_WINDOW_XID (root));
+	XUngrabKey (display, key_code, Mod2Mask | Mod5Mask | LockMask, GDK_WINDOW_XID (root));
 
 	gdk_flush ();
         if (gdk_error_trap_pop ()) {
@@ -226,6 +243,7 @@ filter_mmkeys (GdkXEvent *xevent,
 {
 	XEvent *xev;
 	XKeyEvent *key;
+	Display *display;
 	RBShellPlayer *player;
 	xev = (XEvent *) xevent;
 	if (xev->type != KeyPress) {
@@ -235,20 +253,21 @@ filter_mmkeys (GdkXEvent *xevent,
 	key = (XKeyEvent *) xevent;
 
 	player = (RBShellPlayer *)data;
+	display = GDK_DISPLAY_XDISPLAY (gdk_display_get_default ());
 
-	if (XKeysymToKeycode (GDK_DISPLAY (), XF86XK_AudioPlay) == key->keycode) {
+	if (XKeysymToKeycode (display, XF86XK_AudioPlay) == key->keycode) {
 		rb_shell_player_playpause (player, FALSE, NULL);
 		return GDK_FILTER_REMOVE;
-	} else if (XKeysymToKeycode (GDK_DISPLAY (), XF86XK_AudioPause) == key->keycode) {
+	} else if (XKeysymToKeycode (display, XF86XK_AudioPause) == key->keycode) {
 		rb_shell_player_pause (player, NULL);
 		return GDK_FILTER_REMOVE;
-	} else if (XKeysymToKeycode (GDK_DISPLAY (), XF86XK_AudioStop) == key->keycode) {
+	} else if (XKeysymToKeycode (display, XF86XK_AudioStop) == key->keycode) {
 		rb_shell_player_stop (player);
 		return GDK_FILTER_REMOVE;
-	} else if (XKeysymToKeycode (GDK_DISPLAY (), XF86XK_AudioPrev) == key->keycode) {
+	} else if (XKeysymToKeycode (display, XF86XK_AudioPrev) == key->keycode) {
 		rb_shell_player_do_previous (player, NULL);
 		return GDK_FILTER_REMOVE;
-	} else if (XKeysymToKeycode (GDK_DISPLAY (), XF86XK_AudioNext) == key->keycode) {
+	} else if (XKeysymToKeycode (display, XF86XK_AudioNext) == key->keycode) {
 		rb_shell_player_do_next (player, NULL);
 		return GDK_FILTER_REMOVE;
 	} else {
@@ -265,13 +284,12 @@ mmkeys_grab (RBMMKeysPlugin *plugin, gboolean grab)
 	GdkWindow *root;
 	guint i, j;
 
-	keycodes[0] = XKeysymToKeycode (GDK_DISPLAY (), XF86XK_AudioPlay);
-	keycodes[1] = XKeysymToKeycode (GDK_DISPLAY (), XF86XK_AudioStop);
-	keycodes[2] = XKeysymToKeycode (GDK_DISPLAY (), XF86XK_AudioPrev);
-	keycodes[3] = XKeysymToKeycode (GDK_DISPLAY (), XF86XK_AudioNext);
-	keycodes[4] = XKeysymToKeycode (GDK_DISPLAY (), XF86XK_AudioPause);
-
 	display = gdk_display_get_default ();
+	keycodes[0] = XKeysymToKeycode (GDK_DISPLAY_XDISPLAY (display), XF86XK_AudioPlay);
+	keycodes[1] = XKeysymToKeycode (GDK_DISPLAY_XDISPLAY (display), XF86XK_AudioStop);
+	keycodes[2] = XKeysymToKeycode (GDK_DISPLAY_XDISPLAY (display), XF86XK_AudioPrev);
+	keycodes[3] = XKeysymToKeycode (GDK_DISPLAY_XDISPLAY (display), XF86XK_AudioNext);
+	keycodes[4] = XKeysymToKeycode (GDK_DISPLAY_XDISPLAY (display), XF86XK_AudioPause);
 
 	for (i = 0; i < gdk_display_get_n_screens (display); i++) {
 		screen = gdk_display_get_screen (display, i);
@@ -301,6 +319,39 @@ mmkeys_grab (RBMMKeysPlugin *plugin, gboolean grab)
 #endif
 
 static void
+first_call_notify (DBusGProxy *proxy, DBusGProxyCall *call, RBMMKeysPlugin *plugin)
+{
+	GError *error = NULL;
+
+	if (dbus_g_proxy_end_call (proxy, call, &error, G_TYPE_INVALID) == FALSE) {
+		g_warning ("Unable to grab media player keys: %s", error->message);
+		g_error_free (error);
+	} else {
+		GtkWindow *window;
+
+		rb_debug ("created dbus proxy for org.gnome.SettingsDaemon.MediaKeys; grabbing keys");
+		dbus_g_object_register_marshaller (rb_marshal_VOID__STRING_STRING,
+				G_TYPE_NONE, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_INVALID);
+
+		dbus_g_proxy_add_signal (plugin->proxy,
+					 "MediaPlayerKeyPressed",
+					 G_TYPE_STRING,G_TYPE_STRING,G_TYPE_INVALID);
+
+		dbus_g_proxy_connect_signal (plugin->proxy,
+					     "MediaPlayerKeyPressed",
+					     G_CALLBACK (media_player_key_pressed),
+					     plugin, NULL);
+
+		/* re-grab keys when the main window gains focus */
+		g_object_get (plugin->shell, "window", &window, NULL);
+		g_signal_connect_object (window, "focus-in-event",
+					 G_CALLBACK (window_focus_cb),
+					 plugin, 0);
+		g_object_unref (window);
+	}
+}
+
+static void
 impl_activate (RBPlugin *bplugin,
 	       RBShell *shell)
 {
@@ -313,6 +364,7 @@ impl_activate (RBPlugin *bplugin,
 	g_object_get (shell,
 		      "shell-player", &plugin->shell_player,
 		      NULL);
+	plugin->shell = g_object_ref (shell);
 
 	bus = dbus_g_bus_get (DBUS_BUS_SESSION, NULL);
 	if (plugin->grab_type == NONE && bus != NULL) {
@@ -327,64 +379,15 @@ impl_activate (RBPlugin *bplugin,
 			g_warning ("Unable to grab media player keys: %s", error->message);
 			g_error_free (error);
 		} else {
-			dbus_g_proxy_call (plugin->proxy,
-					   "GrabMediaPlayerKeys", &error,
-					   G_TYPE_STRING, "Rhythmbox",
-					   G_TYPE_UINT, 0,
-					   G_TYPE_INVALID,
-					   G_TYPE_INVALID);
-
-			/* if the method doesn't exist, try the old interface/path */
-			if (error != NULL &&
-			    error->domain == DBUS_GERROR &&
-			    error->code == DBUS_GERROR_UNKNOWN_METHOD) {
-				g_clear_error (&error);
-				g_object_unref (plugin->proxy);
-
-				rb_debug ("trying old dbus interface/path");
-				plugin->proxy = dbus_g_proxy_new_for_name_owner (bus,
-										 "org.gnome.SettingsDaemon",
-										 "/org/gnome/SettingsDaemon",
-										 "org.gnome.SettingsDaemon",
-										 &error);
-				if (plugin->proxy != NULL) {
-					dbus_g_proxy_call (plugin->proxy,
-							   "GrabMediaPlayerKeys", &error,
-							   G_TYPE_STRING, "Rhythmbox",
-							   G_TYPE_UINT, 0,
-							   G_TYPE_INVALID,
-							   G_TYPE_INVALID);
-				}
-			}
-
-			if (error == NULL) {
-				GtkWindow *window;
-
-				rb_debug ("created dbus proxy for org.gnome.SettingsDaemon.MediaKeys; grabbing keys");
-				dbus_g_object_register_marshaller (rb_marshal_VOID__STRING_STRING,
-						G_TYPE_NONE, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_INVALID);
-
-				dbus_g_proxy_add_signal (plugin->proxy,
-							 "MediaPlayerKeyPressed",
-							 G_TYPE_STRING,G_TYPE_STRING,G_TYPE_INVALID);
-
-				dbus_g_proxy_connect_signal (plugin->proxy,
-							     "MediaPlayerKeyPressed",
-							     G_CALLBACK (media_player_key_pressed),
-							     plugin, NULL);
-
-				/* re-grab keys when the main window gains focus */
-				g_object_get (shell, "window", &window, NULL);
-				g_signal_connect_object (window, "focus-in-event",
-							 G_CALLBACK (window_focus_cb),
-							 plugin, 0);
-				g_object_unref (window);
-
-				plugin->grab_type = SETTINGS_DAEMON;
-			} else {
-				g_warning ("Unable to grab media player keys: %s", error->message);
-				g_error_free (error);
-			}
+			dbus_g_proxy_begin_call (plugin->proxy,
+						 "GrabMediaPlayerKeys",
+						 (DBusGProxyCallNotify)first_call_notify,
+						 g_object_ref (plugin),
+						 (GDestroyNotify) g_object_unref,
+						 G_TYPE_STRING, "Rhythmbox",
+						 G_TYPE_UINT, 0,
+						 G_TYPE_INVALID);
+			plugin->grab_type = SETTINGS_DAEMON;
 		}
 	} else {
 		rb_debug ("couldn't get dbus session bus");
@@ -400,6 +403,16 @@ impl_activate (RBPlugin *bplugin,
 }
 
 static void
+final_call_notify (DBusGProxy *proxy, DBusGProxyCall *call, gpointer nothing)
+{
+	GError *error = NULL;
+	if (dbus_g_proxy_end_call (proxy, call, &error, G_TYPE_INVALID) == FALSE) {
+		g_warning ("Unable to release media player keys: %s", error->message);
+		g_error_free (error);
+	}
+}
+
+static void
 impl_deactivate	(RBPlugin *bplugin,
 		 RBShell *shell)
 {
@@ -410,19 +423,20 @@ impl_deactivate	(RBPlugin *bplugin,
 		g_object_unref (plugin->shell_player);
 		plugin->shell_player = NULL;
 	}
+	if (plugin->shell != NULL) {
+		g_object_unref (plugin->shell);
+		plugin->shell = NULL;
+	}
 
 	if (plugin->proxy != NULL) {
-		GError *error = NULL;
-
 		if (plugin->grab_type == SETTINGS_DAEMON) {
-			dbus_g_proxy_call (plugin->proxy,
-					   "ReleaseMediaPlayerKeys", &error,
-					   G_TYPE_STRING, "Rhythmbox",
-					   G_TYPE_INVALID, G_TYPE_INVALID);
-			if (error != NULL) {
-				g_warning ("Could not release media player keys: %s", error->message);
-				g_error_free (error);
-			}
+			dbus_g_proxy_begin_call (plugin->proxy,
+						 "ReleaseMediaPlayerKeys",
+						 (DBusGProxyCallNotify) final_call_notify,
+						 NULL,
+						 NULL,
+						 G_TYPE_STRING, "Rhythmbox",
+						 G_TYPE_INVALID);
 			plugin->grab_type = NONE;
 		}
 
@@ -448,4 +462,3 @@ rb_mmkeys_plugin_class_init (RBMMKeysPluginClass *klass)
 	plugin_class->activate = impl_activate;
 	plugin_class->deactivate = impl_deactivate;
 }
-

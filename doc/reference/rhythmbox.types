@@ -19,6 +19,7 @@
 #include "rb-library-browser.h"
 #include "rb-library-source.h"
 #include "rb-marshal.h"
+#include "rb-media-player-source.h"
 #include "rb-metadata.h"
 #include "rb-missing-files-source.h"
 #include "rb-player.h"
@@ -30,6 +31,7 @@
 #include "rb-play-order.h"
 #include "rb-play-order-random.h"
 #include "rb-play-queue-source.h"
+#include "rb-plugin.h"
 #include "rb-preferences.h"
 #include "rb-property-view.h"
 #include "rb-query-creator.h"
@@ -45,13 +47,18 @@
 #include "rb-shell-preferences.h"
 #include "rb-song-info.h"
 #include "rb-source.h"
+#include "rb-source-group.h"
 #include "rb-source-header.h"
+#include "rb-source-search.h"
+#include "rb-source-search-basic.h"
 #include "rb-sourcelist.h"
 #include "rb-sourcelist-model.h"
 #include "rb-static-playlist-source.h"
 #include "rb-statusbar.h"
 #include "rb-stock-icons.h"
 #include "rb-streaming-source.h"
+#include "rb-track-transfer-queue.h"
+#include "rb-track-transfer-batch.h"
 #include "rb-tree-dnd.h"
 #include "rb-uri-dialog.h"
 #include "rb-util.h"
@@ -61,6 +68,8 @@
 #include "rhythmdb-query-model.h"
 #include "rhythmdb-tree.h"
 #include "rhythmdb-import-job.h"
+#include "rhythmdb-entry.h"
+#include "rhythmdb-entry-type.h"
 
 rb_auto_playlist_source_get_type
 rb_browser_source_get_type
@@ -75,6 +84,7 @@ rb_history_get_type
 rb_import_errors_source_get_type
 rb_library_browser_get_type
 rb_library_source_get_type
+rb_media_player_source_get_type
 rb_metadata_get_type
 rb_missing_files_source_get_type
 rb_player_error_get_type
@@ -86,6 +96,7 @@ rb_playlist_manager_get_type
 rb_playlist_source_get_type
 rb_play_order_get_type
 rb_play_queue_source_get_type
+rb_plugin_get_type
 rb_property_view_get_type
 rb_query_creator_get_type
 rb_random_play_order_get_type
@@ -106,6 +117,8 @@ rb_source_get_type
 rb_source_group_category_get_type
 rb_source_group_get_type
 rb_source_header_get_type
+rb_source_search_get_type
+rb_source_search_basic_get_type
 rb_sourcelist_get_type
 rb_sourcelist_model_column_get_type
 rb_sourcelist_model_get_type
@@ -113,6 +126,8 @@ rb_static_playlist_source_get_type
 rb_statusbar_get_type
 rb_streaming_source_get_type
 rb_string_value_map_get_type
+rb_track_transfer_batch_get_type
+rb_track_transfer_queue_get_type
 rb_tree_drag_dest_get_type
 rb_tree_drag_source_get_type
 rb_uri_dialog_get_type

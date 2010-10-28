@@ -52,14 +52,14 @@
 
 (define-object StaticPlaylistSource
   (in-module "RB")
-  (parent "RBSource")
+  (parent "RBPlaylistSource")
   (c-name "RBStaticPlaylistSource")
   (gtype-id "RB_TYPE_STATIC_PLAYLIST_SOURCE")
 )
 
 (define-object AutoPlaylistSource
   (in-module "RB")
-  (parent "RBSource")
+  (parent "RBPlaylistSource")
   (c-name "RBAutoPlaylistSource")
   (gtype-id "RB_TYPE_AUTO_PLAYLIST_SOURCE")
 )
@@ -165,6 +165,48 @@
   (gtype-id "RB_TYPE_SOURCE_SEARCH_BASIC")
 )
 
+(define-object MetaData
+  (in-module "RB")
+  (parent "GObject")
+  (c-name "RBMetaData")
+  (gtype-id "RB_TYPE_METADATA")
+)
+
+(define-object SearchEntry
+  (in-module "RB")
+  (parent "GtkHBox")
+  (c-name "RBSearchEntry")
+  (gtype-id "RB_TYPE_SEARCH_ENTRY")
+)
+
+(define-object TrackTransferBatch
+  (in-module "RB")
+  (parent "GObject")
+  (c-name "RBTrackTransferBatch")
+  (gtype-id "RB_TYPE_TRACK_TRANSFER_BATCH")
+)
+
+(define-object TrackTransferQueue
+  (in-module "RB")
+  (parent "GObject")
+  (c-name "RBTrackTransferQueue")
+  (gtype-id "RB_TYPE_TRACK_TRANSFER_QUEUE")
+)
+
+(define-object Rating
+  (in-module "RB")
+  (parent "GtkWidget")
+  (c-name "RBRating")
+  (gtype-id "RB_TYPE_RATING")
+)
+
+(define-object ShellPreferences
+  (in-module "RB")
+  (parent "GtkDialog")
+  (c-name "RBShellPreferences")
+  (gtype-id "RB_TYPE_SHELL_PREFERENCES")
+)
+
 ;; Enumerations and flags ...
 
 (define-enum ShellPlayerError
@@ -243,6 +285,7 @@
     '("first-seen" "RB_ENTRY_VIEW_COL_FIRST_SEEN")
     '("last-seen" "RB_ENTRY_VIEW_COL_LAST_SEEN")
     '("location" "RB_ENTRY_VIEW_COL_LOCATION")
+    '("bpm" "RB_ENTRY_VIEW_COL_BPM")
     '("error" "RB_ENTRY_VIEW_COL_ERROR")
   )
 )
@@ -282,6 +325,72 @@
     '("main-top" "RB_SHELL_UI_LOCATION_MAIN_TOP")
     '("main-bottom" "RB_SHELL_UI_LOCATION_MAIN_BOTTOM")
     '("main-notebook" "RB_SHELL_UI_LOCATION_MAIN_NOTEBOOK")
+  )
+)
+
+(define-enum ShellPrefsUILocation
+  (in-module "RB")
+  (c-name "RBShellPrefsUILocation")
+  (gtype-id "RB_TYPE_SHELL_PREFS_UI_LOCATION")
+  (values
+    '("general" "RB_SHELL_PREFS_UI_LOCATION_GENERAL")
+    '("playback" "RB_SHELL_PREFS_UI_LOCATION_PLAYBACK")
+  )
+)
+
+(define-enum MetaDataField
+  (in-module "RB")
+  (c-name "RBMetaDataField")
+  (gtype-id "RB_TYPE_METADATA_FIELD")
+  (values
+    '("title" "RB_METADATA_FIELD_TITLE")
+    '("artist" "RB_METADATA_FIELD_ARTIST")
+    '("album" "RB_METADATA_FIELD_ALBUM")
+    '("date" "RB_METADATA_FIELD_DATE")
+    '("genre" "RB_METADATA_FIELD_GENRE")
+    '("comment" "RB_METADATA_FIELD_COMMENT")
+    '("track-number" "RB_METADATA_FIELD_TRACK_NUMBER")
+    '("max-track-number" "RB_METADATA_FIELD_MAX_TRACK_NUMBER")
+    '("disc-number" "RB_METADATA_FIELD_DISC_NUMBER")
+    '("max-disc-number" "RB_METADATA_FIELD_MAX_DISC_NUMBER")
+    '("description" "RB_METADATA_FIELD_DESCRIPTION")
+    '("version" "RB_METADATA_FIELD_VERSION")
+    '("isrc" "RB_METADATA_FIELD_ISRC")
+    '("organization" "RB_METADATA_FIELD_ORGANIZATION")
+    '("copyright" "RB_METADATA_FIELD_COPYRIGHT")
+    '("contact" "RB_METADATA_FIELD_CONTACT")
+    '("license" "RB_METADATA_FIELD_LICENSE")
+    '("performer" "RB_METADATA_FIELD_PERFORMER")
+    '("duration" "RB_METADATA_FIELD_DURATION")
+    '("codec" "RB_METADATA_FIELD_CODEC")
+    '("bitrate" "RB_METADATA_FIELD_BITRATE")
+    '("track-gain" "RB_METADATA_FIELD_TRACK_GAIN")
+    '("track-peak" "RB_METADATA_FIELD_TRACK_PEAK")
+    '("album-gain" "RB_METADATA_FIELD_ALBUM_GAIN")
+    '("album-peak" "RB_METADATA_FIELD_ALBUM_PEAK")
+    '("language-code" "RB_METADATA_FIELD_LANGUAGE_CODE")
+    '("musicbrainz-trackid" "RB_METADATA_FIELD_MUSICBRAINZ_TRACKID")
+    '("musicbrainz-artistid" "RB_METADATA_FIELD_MUSICBRAINZ_ARTISTID")
+    '("musicbrainz-albumid" "RB_METADATA_FIELD_MUSICBRAINZ_ALBUMID")
+    '("musicbrainz-albumartistid" "RB_METADATA_FIELD_MUSICBRAINZ_ALBUMARTISTID")
+    '("artist-sortname" "RB_METADATA_FIELD_ARTIST_SORTNAME")
+    '("album-sortname" "RB_METADATA_FIELD_ALBUM_SORTNAME")
+    '("last" "RB_METADATA_FIELD_LAST")
+  )
+)
+
+(define-enum MetaDataError
+  (in-module "RB")
+  (c-name "RBMetaDataError")
+  (gtype-id "RB_TYPE_METADATA_ERROR")
+  (values
+    '("io" "RB_METADATA_ERROR_IO")
+    '("missing-plugin" "RB_METADATA_ERROR_MISSING_PLUGIN")
+    '("unrecognized" "RB_METADATA_ERROR_UNRECOGNIZED")
+    '("unsupported" "RB_METADATA_ERROR_UNSUPPORTED")
+    '("general" "RB_METADATA_ERROR_GENERAL")
+    '("internal" "RB_METADATA_ERROR_INTERNAL")
+    '("empty-file" "RB_METADATA_ERROR_EMPTY_FILE")
   )
 )
 
@@ -459,7 +568,7 @@
   (return-type "none")
   (parameters
     '("RBSource*" "source")
-    '("RhythmDBEntryType_*" "type")
+    '("RhythmDBEntryType*" "type")
   )
 )
 
@@ -484,7 +593,7 @@
   (c-name "rb_shell_get_source_by_entry_type")
   (return-type "RBSource*")
   (parameters
-    '("RhythmDBEntryType_*" "type")
+    '("RhythmDBEntryType*" "type")
   )
 )
 
@@ -521,6 +630,12 @@
 (define-method get_playing_source
   (of-object "RBShellPlayer")
   (c-name "rb_shell_player_get_playing_source")
+  (return-type "RBSource*")
+)
+
+(define-method get_active_source
+  (of-object "RBShellPlayer")
+  (c-name "rb_shell_player_get_active_source")
   (return-type "RBSource*")
 )
 
@@ -621,9 +736,10 @@
 (define-method seek
   (of-object "RBShellPlayer")
   (c-name "rb_shell_player_seek")
-  (return-type "none")
+  (return-type "gboolean")
   (parameters
-    '("long" "offset")
+    '("gint32" "offset")
+    '("GError**" "error")
   )
 )
 
@@ -907,8 +1023,8 @@
   (c-name "rb_source_search")
   (return-type "none")
   (parameters
-    '("RBSourceSearch*" "search")
-    '("const-char*" "cur_text")
+    '("RBSourceSearch*" "search" (null-ok))
+    '("const-char*" "cur_text" (null-ok))
     '("const-char*" "new_text")
   )
 )
@@ -1090,6 +1206,28 @@
   )
 )
 
+(define-method want_uri
+  (of-object "RBSource")
+  (c-name "rb_source_want_uri")
+  (return-type "guint")
+  (parameters
+    '("const-char*" "uri")
+  )
+)
+
+(define-method add_uri
+  (of-object "RBSource")
+  (c-name "rb_source_add_uri")
+  (return-type "gboolean")
+  (parameters
+    '("const-char*" "uri")
+    '("const-char*" "title")
+    '("const-char*" "genre")
+    '("RBSourceAddCallback" "callback")
+    '("gpointer" "data")
+    '("GDestroyNotify" "destroy_data")
+  )
+)
 
 (define-virtual impl_get_status
   (of-object "RBSource")
@@ -1138,8 +1276,8 @@
   (of-object "RBSource")
   (return-type "none")
   (parameters
-    '("RBSourceSearch*" "search")
-    '("const-char*" "cur_text")
+    '("RBSourceSearch*" "search" (null-ok))
+    '("const-char*" "cur_text" (null-ok))
     '("const-char*" "new_text")
   )
 )
@@ -1278,6 +1416,26 @@
   (return-type "char*")
 )
 
+(define-virtual impl_want_uri
+  (of-object "RBSource")
+  (return-type "guint")
+  (parameters
+    '("const-char*" "uri")
+  )
+)
+
+(define-virtual impl_add_uri
+  (of-object "RBSource")
+  (return-type "none")
+  (parameters
+    '("const-char*" "uri")
+    '("const-char*" "title" (null-ok))
+    '("const-char*" "genre" (null-ok))
+    '("RBSourceAddCallback" "callback")
+    '("gpointer" "data")
+    '("GDestroyNotify" "destroy_data")
+  )
+)
 
 ;; From ../../sources/rb-sourcelist.h
 
@@ -1925,19 +2083,6 @@
   (return-type "none")
 )
 
-(define-method queue_transfer
-  (of-object "RBRemovableMediaManager")
-  (c-name "rb_removable_media_manager_queue_transfer")
-  (return-type "none")
-  (parameters
-    '("RhythmDBEntry*" "entry")
-    '("const-char*" "dest")
-    '("GList*" "mime_types")
-    '("RBTranferCompleteCallback" "callback")
-    '("gpointer" "userdata")
-  )
-)
-
 ;; From rb-streaming-source.h
 
 (define-function rb_streaming_source_get_type
@@ -2196,7 +2341,7 @@
     '("RBShell*" "shell")
     '("const-char*" "name")
     '("gboolean" "local")
-    '("RhythmDBEntryType_*" "entry_type")
+    '("RhythmDBEntryType*" "entry_type")
   )
 )
 
@@ -2385,19 +2530,6 @@
   (return-type "float")
 )
 
-(define-method set_replaygain
-  (of-object "RBPlayer")
-  (c-name "rb_player_set_replaygain")
-  (return-type "none")
-  (parameters
-    '("const-char*" "uri")
-    '("double" "track_gain")
-    '("double" "track_peak")
-    '("double" "album_gain")
-    '("double" "album_peak")
-  )
-)
-
 (define-method seekable
   (of-object "RBPlayer")
   (c-name "rb_player_seekable")
@@ -2550,6 +2682,25 @@
   )
 )
 
+(define-function sanitize_uri_for_filesystem
+  (in-module "rb")
+  (c-name "rb_sanitize_uri_for_filesystem")
+  (return-type "char*")
+  (parameters
+    '("const-char*" "uri")
+  )
+)
+
+(define-function uri_create_parent_dirs
+  (in-module "rb")
+  (c-name "rb_uri_create_parent_dirs")
+  (return-type "gboolean")
+  (parameters
+    '("const-char*" "uri")
+    '("GError**" "error")
+  )
+)
+
 ;; From rb-source-search.h
 
 (define-function rb_source_search_get_type
@@ -2598,7 +2749,7 @@
   (of-object "RBSourceSearch")
   (return-type "gboolean")
   (parameters
-    '("const-char*" "cur_text")
+    '("const-char*" "cur_text" (null-ok))
     '("const-char*" "new_text")
   )
 )
@@ -2636,5 +2787,330 @@
     '("GtkActionGroup*" "action_group")
     '("GtkRadioActionEntry*" "actions")
     '("int" "n_actions")
+  )
+)
+
+;; From rb-metadata.h
+
+(define-function rb_metadata_error_quark
+  (c-name "rb_metadata_error_quark")
+  (return-type "GQuark")
+)
+
+(define-function rb_metadata_get_type
+  (c-name "rb_metadata_get_type")
+  (return-type "GType")
+)
+
+(define-function rb_metadata_field_get_type
+  (c-name "rb_metadata_field_get_type")
+  (return-type "GType")
+)
+
+(define-function rb_metadata_get_field_type
+  (c-name "rb_metadata_get_field_type")
+  (return-type "GType")
+  (parameters
+    '("RBMetaDataField" "field")
+  )
+)
+
+(define-function rb_metadata_get_field_name
+  (c-name "rb_metadata_get_field_name")
+  (return-type "const-char*")
+  (parameters
+    '("RBMetaDataField" "field")
+  )
+)
+
+(define-function rb_metadata_new
+  (c-name "rb_metadata_new")
+  (is-constructor-of "RbMetadata")
+  (return-type "RBMetaData*")
+)
+
+(define-method can_save
+  (of-object "RBMetaData")
+  (c-name "rb_metadata_can_save")
+  (return-type "gboolean")
+  (parameters
+    '("const-char*" "mimetype")
+  )
+)
+
+(define-method get_saveable_types
+  (of-object "RBMetaData")
+  (c-name "rb_metadata_get_saveable_types")
+  (return-type "char**")
+)
+
+(define-method reset
+  (of-object "RBMetaData")
+  (c-name "rb_metadata_reset")
+  (return-type "none")
+)
+
+(define-method load
+  (of-object "RBMetaData")
+  (c-name "rb_metadata_load")
+  (return-type "none")
+  (parameters
+    '("const-char*" "uri")
+    '("GError**" "error")
+  )
+)
+
+(define-method save
+  (of-object "RBMetaData")
+  (c-name "rb_metadata_save")
+  (return-type "none")
+  (parameters
+    '("const-char*" "uri")
+    '("GError**" "error")
+  )
+)
+
+(define-method get_mime
+  (of-object "RBMetaData")
+  (c-name "rb_metadata_get_mime")
+  (return-type "const-char*")
+)
+
+(define-method has_missing_plugins
+  (of-object "RBMetaData")
+  (c-name "rb_metadata_has_missing_plugins")
+  (return-type "gboolean")
+)
+
+(define-method get_missing_plugins
+  (of-object "RBMetaData")
+  (c-name "rb_metadata_get_missing_plugins")
+  (return-type "gboolean")
+  (parameters
+    '("char***" "missing_plugins")
+    '("char***" "plugin_descriptions")
+  )
+)
+
+(define-method has_audio
+  (of-object "RBMetaData")
+  (c-name "rb_metadata_has_audio")
+  (return-type "gboolean")
+)
+
+(define-method has_video
+  (of-object "RBMetaData")
+  (c-name "rb_metadata_has_video")
+  (return-type "gboolean")
+)
+
+(define-method has_other_data
+  (of-object "RBMetaData")
+  (c-name "rb_metadata_has_other_data")
+  (return-type "gboolean")
+)
+
+(define-method get
+  (of-object "RBMetaData")
+  (c-name "rb_metadata_get")
+  (return-type "gboolean")
+  (parameters
+    '("RBMetaDataField" "field")
+    '("GValue*" "val")
+  )
+)
+
+(define-method set
+  (of-object "RBMetaData")
+  (c-name "rb_metadata_set")
+  (return-type "gboolean")
+  (parameters
+    '("RBMetaDataField" "field")
+    '("const-GValue*" "val")
+  )
+)
+
+;; From rb-search-entry.h
+
+(define-function rb_search_entry_get_type
+  (c-name "rb_search_entry_get_type")
+  (return-type "GType")
+)
+
+(define-function rb_search_entry_new
+  (c-name "rb_search_entry_new")
+  (is-constructor-of "RbSearchEntry")
+  (return-type "RBSearchEntry*")
+)
+
+(define-method clear
+  (of-object "RBSearchEntry")
+  (c-name "rb_search_entry_clear")
+  (return-type "none")
+)
+
+(define-method set_text
+  (of-object "RBSearchEntry")
+  (c-name "rb_search_entry_set_text")
+  (return-type "none")
+  (parameters
+    '("const-char*" "text")
+  )
+)
+
+(define-method searching
+  (of-object "RBSearchEntry")
+  (c-name "rb_search_entry_searching")
+  (return-type "gboolean")
+)
+
+(define-method grab_focus
+  (of-object "RBSearchEntry")
+  (c-name "rb_search_entry_grab_focus")
+  (return-type "none")
+)
+
+;; From rb-track-transfer-batch.h
+
+(define-function rb_track_transfer_batch_get_type
+  (c-name "rb_track_transfer_batch_get_type")
+  (return-type "GType")
+)
+
+(define-function rb_track_transfer_batch_new
+  (c-name "rb_track_transfer_batch_new")
+  (is-constructor-of "RBTrackTransferBatch")
+  (return-type "RBTrackTransferBatch*")
+  (parameters
+    '("GList*" "media_type_list")
+    '("const-char*-const*" "media_types")
+    '("RBSource*" "source")
+    '("RBSource*" "destination")
+  )
+)
+
+(define-method add
+  (of-object "RBTrackTransferBatch")
+  (c-name "rb_track_transfer_batch_add")
+  (return-type "none")
+  (parameters
+    '("RhythmDBEntry*" "entry")
+  )
+)
+
+(define-method check_media_types
+  (of-object "RBTrackTransferBatch")
+  (c-name "rb_track_transfer_batch_check_media_types")
+  (return-type "guint")
+)
+
+(define-method cancel
+  (of-object "RBTrackTransferBatch")
+  (c-name "rb_track_transfer_batch_cancel")
+  (return-type "none")
+)
+
+
+
+;; From rb-track-transfer-queue.h
+
+(define-function rb_track_transfer_queue_new
+  (c-name "rb_track_transfer_queue_new")
+  (is-constructor-of "RBTrackTransferQueue")
+  (return-type "RBTrackTransferQueue*")
+  (parameters
+    '("RBShell*" "shell")
+  )
+)
+
+(define-function rb_track_transfer_queue_get_type
+  (c-name "rb_track_transfer_queue_get_type")
+  (return-type "GType")
+)
+
+(define-method start_batch
+  (of-object "RBTrackTransferQueue")
+  (c-name "rb_track_transfer_queue_start_batch")
+  (return-type "none")
+  (parameters
+    '("RBTrackTransferBatch*" "batch")
+  )
+)
+
+(define-method cancel_batch
+  (of-object "RBTrackTransferQueue")
+  (c-name "rb_track_transfer_queue_cancel_batch")
+  (return-type "none")
+  (parameters
+    '("RBTrackTransferBatch*" "batch")
+  )
+)
+
+(define-method get_status
+  (of-object "RBTrackTransferQueue")
+  (c-name "rb_track_transfer_queue_get_status")
+  (return-type "gboolean")
+  (parameters
+    '("char**" "text")
+    '("char**" "progress_text")
+    '("float*" "progress")
+    '("int*" "time_left")
+  )
+)
+
+(define-method find_batch_by_source
+  (of-object "RBTrackTransferQueue")
+  (c-name "rb_track_transfer_queue_find_batch_by_source")
+  (return-type "GList*")
+  (parameters
+    '("RBSource*" "source")
+  )
+)
+
+;; From rb-rating.h
+
+(define-function rating_new
+  (in-module "rb")
+  (c-name "rb_rating_new")
+  (is-constructor-of "RBRating")
+  (return-type "RBRating*")
+)
+
+;; From rb-shell-preferences.h
+
+(define-function shell_preferences_get_type
+  (c-name "rb_shell_preferences_get_type")
+  (return-type "GType")
+)
+
+(define-method append_page
+  (of-object "RBShellPreferences")
+  (c-name "rb_shell_preferences_append_page")
+  (return-type "none")
+  (parameters
+    '("const-char*" "name")
+    '("GtkWidget*" "widget")
+  )
+)
+
+(define-method add_widget
+  (of-object "RBShellPreferences")
+  (c-name "rb_shell_preferences_add_widget")
+  (return-type "none")
+  (parameters
+    '("GtkWidget*" "widget")
+    '("RBShellPrefsUILocation" "location")
+    '("gboolean" "expand")
+    '("gboolean" "fill")
+  )
+)
+
+(define-method remove_widget
+  (of-object "RBShellPreferences")
+  (c-name "rb_shell_preferences_remove_widget")
+  (return-type "none")
+  (parameters
+    '("GtkWidget*" "widget")
+    '("RBShellPrefsUILocation" "location")
   )
 )

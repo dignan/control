@@ -4,6 +4,7 @@ headers
 #include "config.h"
 
 #define NO_IMPORT_PYGOBJECT
+#define NO_IMPORT_PYGTK
 #include <pygobject.h>
 #include <pygtk/pygtk.h>
 
@@ -18,6 +19,7 @@ headers
 #include "rb-entry-view.h"
 #include "rb-file-helpers.h"
 #include "rb-library-browser.h"
+#include "rb-metadata.h"
 #include "rb-playlist-source.h"
 #include "rb-player.h"
 #include "rb-player-gst-filter.h"
@@ -25,8 +27,10 @@ headers
 #include "rb-player-gst-data-tee.h"
 #include "rb-plugin.h"
 #include "rb-property-view.h"
+#include "rb-rating.h"
 #include "rb-removable-media-manager.h"
 #include "rb-removable-media-source.h"
+#include "rb-search-entry.h"
 #include "rb-shell.h"
 #include "rb-shell-player.h"
 #include "rb-source.h"
@@ -36,6 +40,8 @@ headers
 #include "rb-sourcelist-model.h"
 #include "rb-static-playlist-source.h"
 #include "rb-streaming-source.h"
+#include "rb-track-transfer-batch.h"
+#include "rb-track-transfer-queue.h"
 #include "rb-uri-dialog.h"
 
 void pyrb_register_classes (PyObject *d);
@@ -1332,7 +1338,7 @@ _wrap_RBRemovableMediaSource__do_impl_get_mime_types(PyObject *cls, PyObject *ar
 %%
 override RBRemovableMediaSource__proxy_do_impl_get_mime_types
 static GList *
-_wrap_RBRemovableMediaSource__proxy_do_impl_get_mime_types (RBSource *self)
+_wrap_RBRemovableMediaSource__proxy_do_impl_get_mime_types (RBRemovableMediaSource *self)
 {
 	PyGILState_STATE __py_state;
 	PyObject *py_self;
@@ -1461,7 +1467,6 @@ _wrap_rb_streaming_source_get_progress(PyGObject *self)
     g_free (progress_text);
     return tuple;
 }
-
 %%
 override RBSource__proxy_do_impl_get_delete_action
 static char *
@@ -1544,4 +1549,242 @@ _wrap_RBSource__do_impl_get_delete_action(PyObject *cls, PyObject *args, PyObjec
     tuple = Py_BuildValue ("(s)", key);
     g_free (key);
     return tuple;
+}
+%%
+override rb_metadata_get kwargs
+static PyObject *
+_wrap_rb_metadata_get(PyGObject *self, PyObject *args, PyObject *kwargs)
+{
+	static char *kwlist[] = { "field", NULL };
+	PyObject *py_field = NULL;
+	RBMetaData *metadata;
+	int field;
+	GValue value = {0,};
+	PyObject *ret;
+
+	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O:RBMetaData.get", kwlist, &py_field))
+		return NULL;
+	if (pyg_enum_get_value(RB_TYPE_METADATA_FIELD, py_field, &field))
+		return NULL;
+
+	metadata = RB_METADATA (self->obj);
+	g_value_init (&value, rb_metadata_get_field_type ((RBMetaDataField)field));
+	rb_metadata_get (metadata, (RBMetaDataField)field, &value);
+	ret = pyg_value_as_pyobject (&value, TRUE);
+	g_value_unset (&value);
+	if (ret)
+		return ret;
+	Py_RETURN_NONE;
+}
+%%
+override rb_metadata_set kwargs
+static PyObject *
+_wrap_rb_metadata_set(PyGObject *self, PyObject *args, PyObject *kwargs)
+{
+	static char *kwlist[] = { "field", "value", NULL };
+	PyObject *py_field = NULL;
+	PyObject *py_value = NULL;
+	int field;
+	GValue value = {0,};
+	GType field_type;
+
+	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OO:RBMetaData.set", kwlist, &py_field, &py_value))
+		return NULL;
+	if (pyg_enum_get_value(RB_TYPE_METADATA_FIELD, py_field, &field))
+		return NULL;
+
+	field_type = rb_metadata_get_field_type ((RBMetaDataField)field);
+	g_value_init(&value, field_type);
+	if (pyg_value_from_pyobject(&value, py_value) < 0) {
+		char *s;
+
+		s = g_strdup_printf ("could not convert argument from type '%s' (%d) to correct type '%s'",
+					 g_type_name (pyg_type_from_object (py_value)),
+					 (int)pyg_type_from_object (py_value),
+					 g_type_name (field_type));
+		PyErr_SetString(PyExc_TypeError, s);
+		g_free (s);
+		return NULL;
+	}
+	rb_metadata_set (RB_METADATA (self->obj), (RBMetaDataField)field, &value);
+	g_value_unset (&value);
+	Py_RETURN_NONE;
+}
+%%
+override RBSource__proxy_do_impl_search
+static void
+_wrap_RBSource__proxy_do_impl_search(RBSource *self, RBSourceSearch*search, const char*cur_text, const char*new_text)
+{
+    PyGILState_STATE __py_state;
+    PyObject *py_self;
+    PyObject *py_search = NULL;
+    PyObject *py_cur_text;
+    PyObject *py_new_text;
+    PyObject *py_retval;
+    PyObject *py_args;
+    PyObject *py_method;
+
+    __py_state = pyg_gil_state_ensure();
+    py_self = pygobject_new((GObject *) self);
+    if (!py_self) {
+        if (PyErr_Occurred())
+            PyErr_Print();
+        pyg_gil_state_release(__py_state);
+        return;
+    }
+
+    if (search)
+        py_search = pygobject_new((GObject *) search);
+    else {
+        Py_INCREF(Py_None);
+        py_search = Py_None;
+    }
+
+    if(cur_text)
+        py_cur_text = PyString_FromString(cur_text);
+    else {
+        Py_INCREF(Py_None);
+        py_cur_text = Py_None;
+    }
+    if (!py_cur_text) {
+        if (PyErr_Occurred())
+            PyErr_Print();
+        Py_DECREF(py_search);
+        Py_DECREF(py_self);
+        pyg_gil_state_release(__py_state);
+        return;
+    }
+
+    if(new_text)
+        py_new_text = PyString_FromString(new_text);
+    else {
+        Py_INCREF(Py_None);
+        py_new_text = Py_None;
+    }
+    if (!py_new_text) {
+        if (PyErr_Occurred())
+            PyErr_Print();
+        Py_DECREF(py_cur_text);
+        Py_DECREF(py_search);
+        Py_DECREF(py_self);
+        pyg_gil_state_release(__py_state);
+        return;
+    }
+
+    py_args = PyTuple_New(3);
+    PyTuple_SET_ITEM(py_args, 0, py_search);
+    PyTuple_SET_ITEM(py_args, 1, py_cur_text);
+    PyTuple_SET_ITEM(py_args, 2, py_new_text);
+
+    py_method = PyObject_GetAttrString(py_self, "do_impl_search");
+    if (!py_method) {
+        if (PyErr_Occurred())
+            PyErr_Print();
+        Py_DECREF(py_args);
+        Py_DECREF(py_self);
+        pyg_gil_state_release(__py_state);
+        return;
+    }
+    py_retval = PyObject_CallObject(py_method, py_args);
+    if (!py_retval) {
+        if (PyErr_Occurred())
+            PyErr_Print();
+        Py_XDECREF(py_retval);
+        Py_DECREF(py_method);
+        Py_DECREF(py_args);
+        Py_DECREF(py_self);
+        pyg_gil_state_release(__py_state);
+        return;
+    }
+    if (py_retval != Py_None) {
+        PyErr_SetString(PyExc_TypeError, "virtual method should return None");
+        PyErr_Print();
+        Py_XDECREF(py_retval);
+        Py_DECREF(py_method);
+        Py_DECREF(py_args);
+        Py_DECREF(py_self);
+        pyg_gil_state_release(__py_state);
+        return;
+    }
+
+
+    Py_XDECREF(py_retval);
+    Py_DECREF(py_method);
+    Py_DECREF(py_args);
+    Py_DECREF(py_self);
+    pyg_gil_state_release(__py_state);
+}
+%%
+override RBSource__proxy_do_impl_add_uri
+static gboolean
+_wrap_RBSource__proxy_do_impl_add_uri(RBSource *self, const char*uri, const char*title, const char*genre, RBSourceAddCallback callback, gpointer data, GDestroyNotify destroy_data)
+{
+    PyGILState_STATE __py_state;
+    PyObject *py_self;
+    PyObject *py_uri = NULL;
+    PyObject *py_title;
+    PyObject *py_genre;
+    PyObject *py_retval;
+    PyObject *py_args;
+    PyObject *py_method;
+    
+    __py_state = pyg_gil_state_ensure();
+    py_self = pygobject_new((GObject *) self);
+    if (!py_self) {
+        if (PyErr_Occurred())
+            PyErr_Print();
+        pyg_gil_state_release(__py_state);
+        return;
+    }
+    if (uri)
+        py_uri = PyString_FromString(uri);
+    if (!py_uri) {
+        if (PyErr_Occurred())
+            PyErr_Print();
+        Py_DECREF(py_self);
+        pyg_gil_state_release(__py_state);
+        return;
+    }
+    if (title)
+        py_title = PyString_FromString(title);
+    else {
+        Py_INCREF(Py_None);
+        py_title = Py_None;
+    }
+    if (genre)
+        py_genre = PyString_FromString(genre);
+    else {
+        Py_INCREF(Py_None);
+        py_genre = Py_None;
+    }
+    
+    py_args = PyTuple_New(3);
+    PyTuple_SET_ITEM(py_args, 0, py_uri);
+    PyTuple_SET_ITEM(py_args, 1, py_title);
+    PyTuple_SET_ITEM(py_args, 2, py_genre);
+    
+    py_method = PyObject_GetAttrString(py_self, "do_impl_add_uri");
+    if (!py_method) {
+        if (PyErr_Occurred())
+            PyErr_Print();
+        Py_DECREF(py_args);
+        Py_DECREF(py_self);
+        pyg_gil_state_release(__py_state);
+        return;
+    }
+    py_retval = PyObject_CallObject(py_method, py_args);
+    if (callback) {
+	callback (self, uri, data);
+	if (destroy_data) {
+	    destroy_data (data);
+	}
+    }
+
+    if (PyErr_Occurred())
+	PyErr_Print();
+    Py_XDECREF(py_retval);
+    Py_DECREF(py_method);
+    Py_DECREF(py_args);
+    Py_DECREF(py_self);
+    pyg_gil_state_release(__py_state);
 }

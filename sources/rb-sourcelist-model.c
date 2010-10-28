@@ -41,6 +41,8 @@
 #include "rb-marshal.h"
 #include "rb-playlist-source.h"
 
+#include "gseal-gtk-compat.h"
+
 /**
  * SECTION:rb-sourcelist-model
  * @short_description: models backing the source list widget
@@ -150,10 +152,8 @@ static void
 rb_sourcelist_model_class_init (RBSourceListModelClass *class)
 {
 	GObjectClass   *o_class;
-	GtkObjectClass *object_class;
 
 	o_class = (GObjectClass *) class;
-	object_class = (GtkObjectClass *) class;
 
 	o_class->finalize = rb_sourcelist_model_finalize;
 
@@ -168,7 +168,7 @@ rb_sourcelist_model_class_init (RBSourceListModelClass *class)
 	 */
 	rb_sourcelist_model_signals[DROP_RECEIVED] =
 		g_signal_new ("drop_received",
-			      G_OBJECT_CLASS_TYPE (object_class),
+			      G_OBJECT_CLASS_TYPE (class),
 			      G_SIGNAL_RUN_LAST,
 			      G_STRUCT_OFFSET (RBSourceListModelClass, drop_received),
 			      NULL, NULL,
@@ -459,7 +459,8 @@ rb_sourcelist_model_get_drag_target (RbTreeDragDest *drag_dest,
 				     GtkTreePath *path,
 				     GtkTargetList *target_list)
 {
-	if (g_list_find (context->targets, gdk_atom_intern ("application/x-rhythmbox-source", TRUE))) {
+	if (g_list_find (gdk_drag_context_list_targets (context),
+	    gdk_atom_intern ("application/x-rhythmbox-source", TRUE))) {
 		/* always accept rb source path if offered */
 		return gdk_atom_intern ("application/x-rhythmbox-source", TRUE);
 	}
@@ -469,7 +470,7 @@ rb_sourcelist_model_get_drag_target (RbTreeDragDest *drag_dest,
 		GdkAtom entry_atom;
 
 		entry_atom = gdk_atom_intern ("application/x-rhythmbox-entry", FALSE);
-		if (g_list_find (context->targets, entry_atom))
+		if (g_list_find (gdk_drag_context_list_targets (context), entry_atom))
 			return entry_atom;
 
 		return gdk_atom_intern ("text/uri-list", FALSE);
@@ -613,6 +614,7 @@ rb_sourcelist_model_row_deleted_cb (GtkTreeModel *model,
  * @RB_SOURCELIST_MODEL_COLUMN_VISIBILITY: the source's visibility
  * @RB_SOURCELIST_MODEL_COLUMN_IS_GROUP: whether the row identifies a group or a source
  * @RB_SOURCELIST_MODEL_COLUMN_GROUP_CATEGORY: if the row is a group, the category for the group
+ * @RB_SOURCELIST_MODEL_N_COLUMNS: the number of columns
  *
  * Columns present in the source list model.
  */
@@ -627,14 +629,14 @@ rb_sourcelist_model_column_get_type (void)
 
 	if (etype == 0)	{
 		static const GEnumValue values[] = {
-			ENUM_ENTRY (RB_SOURCELIST_MODEL_COLUMN_PLAYING, "Playing"),
-			ENUM_ENTRY (RB_SOURCELIST_MODEL_COLUMN_PIXBUF, "Pixbuf Icon"),
-			ENUM_ENTRY (RB_SOURCELIST_MODEL_COLUMN_NAME, "Name"),
-			ENUM_ENTRY (RB_SOURCELIST_MODEL_COLUMN_SOURCE, "Source"),
-			ENUM_ENTRY (RB_SOURCELIST_MODEL_COLUMN_ATTRIBUTES, "Attributes"),
-			ENUM_ENTRY (RB_SOURCELIST_MODEL_COLUMN_VISIBILITY, "Visibility"),
-			ENUM_ENTRY (RB_SOURCELIST_MODEL_COLUMN_IS_GROUP, "Is group"),
-			ENUM_ENTRY (RB_SOURCELIST_MODEL_COLUMN_GROUP_CATEGORY, "Source group category"),
+			ENUM_ENTRY (RB_SOURCELIST_MODEL_COLUMN_PLAYING, "playing"),
+			ENUM_ENTRY (RB_SOURCELIST_MODEL_COLUMN_PIXBUF, "pixbuf-icon"),
+			ENUM_ENTRY (RB_SOURCELIST_MODEL_COLUMN_NAME, "name"),
+			ENUM_ENTRY (RB_SOURCELIST_MODEL_COLUMN_SOURCE, "source"),
+			ENUM_ENTRY (RB_SOURCELIST_MODEL_COLUMN_ATTRIBUTES, "attributes"),
+			ENUM_ENTRY (RB_SOURCELIST_MODEL_COLUMN_VISIBILITY, "visibility"),
+			ENUM_ENTRY (RB_SOURCELIST_MODEL_COLUMN_IS_GROUP, "is-group"),
+			ENUM_ENTRY (RB_SOURCELIST_MODEL_COLUMN_GROUP_CATEGORY, "source-group-category"),
 			{ 0, 0, 0 }
 		};
 

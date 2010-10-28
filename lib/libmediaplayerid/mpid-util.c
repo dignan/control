@@ -29,6 +29,16 @@ static gboolean debug_enabled = FALSE;
 
 #define ENUM_ENTRY(name, nick) { name, "" #name "", nick }
 
+/**
+ * MPIDError:
+ * @MPID_ERROR_NONE: Indicates no error has occurred
+ * @MPID_ERROR_NO_DEVICE_PATH: Unable to find the device path
+ * @MPID_ERROR_MECHANISM_FAILED: The device detection mechanism (e.g. udev or HAL) failed
+ * @MPID_ERROR_NOT_MEDIA_PLAYER: The device is not a media player
+ * @MPID_ERROR_DEVICE_INFO_MISSING: The device detection mechanism identified the device
+ *   but was unable to locate its device information
+ */
+
 GType
 mpid_error_get_type (void)
 {
@@ -37,10 +47,10 @@ mpid_error_get_type (void)
 	if (etype == 0) {
 		static const GEnumValue values[] = {
 			ENUM_ENTRY(MPID_ERROR_NONE, "OK"),
-			ENUM_ENTRY(MPID_ERROR_NO_DEVICE_PATH, "No such device"),
-			ENUM_ENTRY(MPID_ERROR_MECHANISM_FAILED, "Failed to access device database"),
-			ENUM_ENTRY(MPID_ERROR_NOT_MEDIA_PLAYER, "Device is not a media player"),
-			ENUM_ENTRY(MPID_ERROR_DEVICE_INFO_MISSING, "Device information is missing from database"),
+			ENUM_ENTRY(MPID_ERROR_NO_DEVICE_PATH, "no-such-device"),
+			ENUM_ENTRY(MPID_ERROR_MECHANISM_FAILED, "device-db-failed"),
+			ENUM_ENTRY(MPID_ERROR_NOT_MEDIA_PLAYER, "not-media-player"),
+			ENUM_ENTRY(MPID_ERROR_DEVICE_INFO_MISSING, "device-info-missing"),
 			{ 0, 0, 0 }
 		};
 
@@ -50,6 +60,13 @@ mpid_error_get_type (void)
 	return etype;
 }
 
+/**
+ * MPIDSource:
+ * @MPID_SOURCE_NONE: No device information is available
+ * @MPID_SOURCE_SYSTEM: Device information provided by the operating system (e.g. udev or HAL)
+ * @MPID_SOURCE_OVERRIDE: Device information provided by an override file on the device itself.
+ */
+
 GType
 mpid_source_get_type (void)
 {
@@ -57,9 +74,9 @@ mpid_source_get_type (void)
 
 	if (etype == 0) {
 		static const GEnumValue values[] = {
-			ENUM_ENTRY(MPID_SOURCE_NONE, "No device information"),
-			ENUM_ENTRY(MPID_SOURCE_SYSTEM, "Device information from system database"),
-			ENUM_ENTRY(MPID_SOURCE_OVERRIDE, "Device information from override file"),
+			ENUM_ENTRY(MPID_SOURCE_NONE, "no-device-info"),
+			ENUM_ENTRY(MPID_SOURCE_SYSTEM, "system-device-info"),
+			ENUM_ENTRY(MPID_SOURCE_OVERRIDE, "override-device-info"),
 			{ 0, 0, 0 }
 		};
 
@@ -69,6 +86,12 @@ mpid_source_get_type (void)
 	return etype;
 }
 
+/**
+ * mpid_enable_debug:
+ * @debug: whether to enable debug output
+ *
+ * Enables or disables debug output from the MPID library
+ */
 void
 mpid_enable_debug (gboolean debug)
 {

@@ -28,13 +28,13 @@
 #ifndef RHYTHMDB_PRIVATE_H
 #define RHYTHMDB_PRIVATE_H
 
-#include "rhythmdb.h"
-#include "rb-refstring.h"
-#include "rb-metadata.h"
+#include <rhythmdb/rhythmdb.h>
+#include <rhythmdb/rb-refstring.h>
+#include <metadata/rb-metadata.h>
 
 G_BEGIN_DECLS
 
-RhythmDBEntry * rhythmdb_entry_allocate		(RhythmDB *db, RhythmDBEntryType type);
+RhythmDBEntry * rhythmdb_entry_allocate		(RhythmDB *db, RhythmDBEntryType *type);
 void		rhythmdb_entry_insert		(RhythmDB *db, RhythmDBEntry *entry);
 
 typedef struct {
@@ -69,28 +69,28 @@ struct RhythmDBEntry_ {
 	guint flags;
 	volatile gint refcount;
 	void *data;
-	RhythmDBEntryType type;
+	RhythmDBEntryType *type;
 	guint id;
 
 	/* metadata */
 	RBRefString *title;
 	RBRefString *artist;
 	RBRefString *album;
+	RBRefString *album_artist;
 	RBRefString *genre;
+	RBRefString *comment;
 	RBRefString *musicbrainz_trackid;
 	RBRefString *musicbrainz_artistid;
 	RBRefString *musicbrainz_albumid;
 	RBRefString *musicbrainz_albumartistid;
 	RBRefString *artist_sortname;
 	RBRefString *album_sortname;
+	RBRefString *album_artist_sortname;
 	gulong tracknum;
 	gulong discnum;
 	gulong duration;
 	gulong bitrate;
-	double track_gain;
-	double track_peak;
-	double album_gain;
-	double album_peak;
+	double bpm;
 	GDate date;
 
 	/* filesystem */
@@ -123,11 +123,6 @@ struct _RhythmDBPrivate
 	gint read_counter;
 
 	RBMetaData *metadata;
-	gboolean metadata_blocked;
-	GMutex *metadata_lock;
-	GCond *metadata_cond;
-
-	xmlChar **column_xml_names;
 
 	RBRefString *empty_string;
 	RBRefString *octet_stream_str;
@@ -142,8 +137,12 @@ struct _RhythmDBPrivate
 
 	GList *stat_list;
 	GList *outstanding_stats;
+	GList *active_mounts;
+	GList *mount_list;
 	GMutex *stat_mutex;
 	gboolean stat_thread_running;
+	int stat_thread_count;
+	int stat_thread_done;
 
 	GVolumeMonitor *volume_monitor;
 	GHashTable *monitored_directories;
@@ -200,15 +199,13 @@ typedef struct
 		RHYTHMDB_EVENT_THREAD_EXITED,
 		RHYTHMDB_EVENT_DB_SAVED,
 		RHYTHMDB_EVENT_QUERY_COMPLETE,
-		RHYTHMDB_EVENT_FILE_CREATED_OR_MODIFIED,
-		RHYTHMDB_EVENT_FILE_DELETED,
 		RHYTHMDB_EVENT_ENTRY_SET
 	} type;
 	RBRefString *uri;
 	RBRefString *real_uri; /* Target of a symlink, if any */
-	RhythmDBEntryType entry_type;
-	RhythmDBEntryType ignore_type;
-	RhythmDBEntryType error_type;
+	RhythmDBEntryType *entry_type;
+	RhythmDBEntryType *ignore_type;
+	RhythmDBEntryType *error_type;
 
 	GError *error;
 	RhythmDB *db;
@@ -242,10 +239,14 @@ void rhythmdb_finalize_monitoring (RhythmDB *db);
 void rhythmdb_stop_monitoring (RhythmDB *db);
 void rhythmdb_start_monitoring (RhythmDB *db);
 void rhythmdb_monitor_uri_path (RhythmDB *db, const char *uri, GError **error);
+GList *rhythmdb_get_active_mounts (RhythmDB *db);
 
 /* from rhythmdb-query.c */
 GPtrArray *rhythmdb_query_parse_valist (RhythmDB *db, va_list args);
 void       rhythmdb_read_encoded_property (RhythmDB *db, const char *data, RhythmDBPropType propid, GValue *val);
+
+/* from rhythmdb-song-entry-types.c */
+void       rhythmdb_register_song_entry_types (RhythmDB *db);
 
 G_END_DECLS
 

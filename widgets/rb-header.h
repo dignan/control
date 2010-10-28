@@ -31,8 +31,8 @@
 
 #include <gtk/gtk.h>
 
-#include "rhythmdb.h"
-#include "rb-shell-player.h"
+#include <rhythmdb/rhythmdb.h>
+#include <shell/rb-shell-player.h>
 
 G_BEGIN_DECLS
 
@@ -71,8 +71,6 @@ void		rb_header_set_show_position_slider (RBHeader *header,
 void		rb_header_sync			(RBHeader *header);
 
 void		rb_header_sync_time		(RBHeader *header);
-
-char *		rb_header_get_elapsed_string	(RBHeader *header);
 
 G_END_DECLS
 

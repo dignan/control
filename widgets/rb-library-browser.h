@@ -30,9 +30,9 @@
 
 #include <gtk/gtk.h>
 
-#include "rhythmdb.h"
-#include "rhythmdb-query-model.h"
-#include "rb-property-view.h"
+#include <rhythmdb/rhythmdb.h>
+#include <rhythmdb/rhythmdb-query-model.h>
+#include <widgets/rb-property-view.h>
 
 G_BEGIN_DECLS
 
@@ -58,7 +58,7 @@ struct _RBLibraryBrowserClass
 
 GType			rb_library_browser_get_type (void);
 RBLibraryBrowser *	rb_library_browser_new      (RhythmDB *db,
-						     RhythmDBEntryType entry_type);
+						     RhythmDBEntryType *entry_type);
 
 void 			rb_library_browser_set_model (RBLibraryBrowser *widget,
 						      RhythmDBQueryModel *model,

@@ -52,6 +52,8 @@
 #include <glib/gi18n.h>
 #include <glib-object.h>
 
+#include "rb-track-transfer-batch.h"
+#include "rb-track-transfer-queue.h"
 #include <profiles/gnome-media-profiles.h>
 #include <profiles/audio-profile-choose.h>
 
@@ -63,8 +65,9 @@
 #include "rb-util.h"
 #include "eel-gconf-extensions.h"
 #include "rb-library-source.h"
-#include "rb-removable-media-manager.h"
 #include "rb-auto-playlist-source.h"
+#include "rb-encoder.h"
+#include "rb-missing-plugins.h"
 
 static void rb_library_source_class_init (RBLibrarySourceClass *klass);
 static void rb_library_source_init (RBLibrarySource *source);
@@ -79,9 +82,16 @@ static char *impl_get_browser_key (RBSource *source);
 static char *impl_get_paned_key (RBBrowserSource *source);
 static gboolean impl_receive_drag (RBSource *source, GtkSelectionData *data);
 static gboolean impl_can_paste (RBSource *asource);
-static void impl_paste (RBSource *source, GList *entries);
+static RBTrackTransferBatch *impl_paste (RBSource *source, GList *entries);
 static guint impl_want_uri (RBSource *source, const char *uri);
-static gboolean impl_add_uri (RBSource *source, const char *uri, const char *title, const char *genre);
+static void impl_add_uri (RBSource *source,
+			  const char *uri,
+			  const char *title,
+			  const char *genre,
+			  RBSourceAddCallback callback,
+			  gpointer data,
+			  GDestroyNotify destroy_data);
+static void impl_get_status (RBSource *source, char **text, char **progress_text, float *progress);
 
 static void rb_library_source_ui_prefs_sync (RBLibrarySource *source);
 static void rb_library_source_preferences_sync (RBLibrarySource *source);
@@ -117,6 +127,7 @@ static void rb_library_source_filename_changed_cb (GtkComboBox *box,
 static void rb_library_source_format_changed_cb (GtkWidget *widget,
 						 RBLibrarySource *source);
 static void layout_example_label_update (RBLibrarySource *source);
+static RhythmDBImportJob *maybe_create_import_job (RBLibrarySource *source);
 
 #define CONF_UI_LIBRARY_DIR CONF_PREFIX "/ui/library"
 #define CONF_STATE_LIBRARY_DIR CONF_PREFIX "/state/library"
@@ -166,6 +177,9 @@ struct RBLibrarySourcePrivate
 	GtkWidget *preferred_format_menu;
 	GtkWidget *layout_example_label;
 
+	GList *import_jobs;
+	guint start_import_job_id;
+
 	guint library_location_notify_id;
 	guint ui_dir_notify_id;
 	guint layout_path_notify_id;
@@ -195,6 +209,7 @@ rb_library_source_class_init (RBLibrarySourceClass *klass)
 	source_class->impl_paste = impl_paste;
 	source_class->impl_want_uri = impl_want_uri;
 	source_class->impl_add_uri = impl_add_uri;
+	source_class->impl_get_status = impl_get_status;
 
 	browser_source_class->impl_get_paned_key = impl_get_paned_key;
 	browser_source_class->impl_has_drop_support = (RBBrowserSourceFeatureFunc) rb_true_function;
@@ -244,6 +259,21 @@ rb_library_source_dispose (GObject *object)
 	if (source->priv->layout_filename_notify_id != 0) {
 		eel_gconf_notification_remove (source->priv->layout_filename_notify_id);
 		source->priv->layout_filename_notify_id = 0;
+	}
+
+	if (source->priv->import_jobs != NULL) {
+		GList *t;
+		if (source->priv->start_import_job_id != 0) {
+			g_source_remove (source->priv->start_import_job_id);
+			source->priv->start_import_job_id = 0;
+		}
+		for (t = source->priv->import_jobs; t != NULL; t = t->next) {
+			RhythmDBImportJob *job = RHYTHMDB_IMPORT_JOB (t->data);
+			rhythmdb_import_job_cancel (job);
+			g_object_unref (job);
+		}
+		g_list_free (source->priv->import_jobs);
+		source->priv->import_jobs = NULL;
 	}
 
 	G_OBJECT_CLASS (rb_library_source_parent_class)->dispose (object);
@@ -369,9 +399,6 @@ rb_library_source_new (RBShell *shell)
 	RBSource *source;
 	GdkPixbuf *icon;
 	gint size;
-	RhythmDBEntryType entry_type;
-
-	entry_type = RHYTHMDB_ENTRY_TYPE_SONG;
 
 	gtk_icon_size_lookup (RB_SOURCE_ICON_SIZE, &size, NULL);
 	icon = gtk_icon_theme_load_icon (gtk_icon_theme_get_default (),
@@ -380,7 +407,7 @@ rb_library_source_new (RBShell *shell)
 					 0, NULL);
 	source = RB_SOURCE (g_object_new (RB_TYPE_LIBRARY_SOURCE,
 					  "name", _("Music"),
-					  "entry-type", entry_type,
+					  "entry-type", RHYTHMDB_ENTRY_TYPE_SONG,
 					  "source-group", RB_SOURCE_GROUP_LIBRARY,
 					  "sorting-key", CONF_STATE_LIBRARY_SORTING,
 					  "shell", shell,
@@ -391,7 +418,7 @@ rb_library_source_new (RBShell *shell)
 		g_object_unref (icon);
 	}
 
-	rb_shell_register_entry_type_for_source (shell, source, entry_type);
+	rb_shell_register_entry_type_for_source (shell, source, RHYTHMDB_ENTRY_TYPE_SONG);
 
 	return source;
 }
@@ -403,7 +430,6 @@ rb_library_source_edit_profile_clicked_cb (GtkButton *button, RBLibrarySource *s
 
 	dialog = gm_audio_profiles_edit_new (eel_gconf_client_get_global (),
 					     GTK_WINDOW (source->priv->shell_prefs));
-	gtk_dialog_set_has_separator (GTK_DIALOG (dialog), FALSE);
 	gtk_widget_show_all (dialog);
 	gtk_dialog_run (GTK_DIALOG (dialog));
 }
@@ -692,8 +718,10 @@ impl_receive_drag (RBSource *asource, GtkSelectionData *data)
 			entry = rhythmdb_entry_lookup_from_string (source->priv->db, uri, is_id);
 
 			if (entry == NULL) {
+				RhythmDBImportJob *job;
 				/* add to the library */
-				rhythmdb_add_uri (source->priv->db, uri);
+				job = maybe_create_import_job (source);
+				rhythmdb_import_job_add_uri (job, uri);
 			} else {
 				/* add to list of entries to copy */
 				entries = g_list_prepend (entries, entry);
@@ -728,8 +756,10 @@ rb_library_source_path_changed_cb (GtkComboBox *box, RBLibrarySource *source)
 	gint index;
 
 	index = gtk_combo_box_get_active (box);
-	path = (index >= 0) ? library_layout_paths[index].path : "";
-	eel_gconf_set_string (CONF_LIBRARY_LAYOUT_PATH, path);
+	if (index >= 0) {
+		path = library_layout_paths[index].path;
+		eel_gconf_set_string (CONF_LIBRARY_LAYOUT_PATH, path);
+	}
 }
 
 static void
@@ -739,8 +769,10 @@ rb_library_source_filename_changed_cb (GtkComboBox *box, RBLibrarySource *source
 	gint index;
 
 	index = gtk_combo_box_get_active (box);
-	filename = (index >= 0) ? library_layout_filenames[index].path : "";
-	eel_gconf_set_string (CONF_LIBRARY_LAYOUT_FILENAME, filename);
+	if (index >= 0) {
+		filename = library_layout_filenames[index].path;
+		eel_gconf_set_string (CONF_LIBRARY_LAYOUT_FILENAME, filename);
+	}
 }
 
 static void
@@ -754,7 +786,7 @@ rb_library_source_format_changed_cb (GtkWidget *widget, RBLibrarySource *source)
 	layout_example_label_update (source);
 }
 
-/**
+/*
  * Perform magic on a path to make it safe.
  *
  * This will always replace '/' with '-', and optionally make the file name
@@ -810,6 +842,11 @@ sanitize_pattern (const char *pat)
  * %aA -- album artist (lowercase)
  * %as -- album artist sortname
  * %aS -- album artist sortname (lowercase)
+ * %ay -- album release year
+ * %an -- album disc number
+ * %aN -- album disc number, zero padded
+ * %ag -- album genre
+ * %aG -- album genre (lowercase)
  * %tn -- track number (i.e 8)
  * %tN -- track number, zero padded (i.e 08)
  * %tt -- track title
@@ -827,20 +864,20 @@ filepath_parse_pattern (RhythmDB *db,
 	const char *p;
 	char *temp;
 	GString *s;
-	GValue *value;
 	RBRefString *albumartist;
+	RBRefString *albumartist_sort;
 
 	if (pattern == NULL || pattern[0] == 0)
 		return g_strdup (" ");
 
-	/* request album artist (this is sort of temporary) */
-	value = rhythmdb_entry_request_extra_metadata (db, entry, RHYTHMDB_PROP_ALBUM_ARTIST);
-	if (value != NULL) {
-		albumartist = rb_refstring_new (g_value_get_string (value));
-		g_value_unset (value);
-		g_free (value);
-	} else {
+	/* figure out album artist - use the plain artist field if not specified */
+	albumartist = rhythmdb_entry_get_refstring (entry, RHYTHMDB_PROP_ALBUM_ARTIST);
+	if (albumartist == NULL || g_strcmp0 (rb_refstring_get (albumartist), "") == 0) {
 		albumartist = rhythmdb_entry_get_refstring (entry, RHYTHMDB_PROP_ARTIST);
+	}
+	albumartist_sort = rhythmdb_entry_get_refstring (entry, RHYTHMDB_PROP_ALBUM_ARTIST_SORTNAME);
+	if (albumartist_sort == NULL || g_strcmp0 (rb_refstring_get (albumartist_sort), "") == 0) {
+		albumartist_sort = rhythmdb_entry_get_refstring (entry, RHYTHMDB_PROP_ARTIST_SORTNAME);
 	}
 
 	s = g_string_new (NULL);
@@ -848,7 +885,6 @@ filepath_parse_pattern (RhythmDB *db,
 	p = pattern;
 	while (*p) {
 		char *string = NULL;
-		char *t;
 
 		/* If not a % marker, copy and continue */
 		if (*p != '%') {
@@ -883,12 +919,25 @@ filepath_parse_pattern (RhythmDB *db,
 				string = sanitize_path (rb_refstring_get_folded (albumartist));
 				break;
 			case 's':
-				string = sanitize_path (rhythmdb_entry_get_string (entry, RHYTHMDB_PROP_ARTIST_SORTNAME));
+				string = sanitize_path (rb_refstring_get (albumartist_sort));
 				break;
 			case 'S':
-				t = g_utf8_strdown (rhythmdb_entry_get_string (entry, RHYTHMDB_PROP_ARTIST_SORTNAME), -1);
-				string = sanitize_path (t);
-				g_free (t);
+				string = sanitize_path (rb_refstring_get_folded (albumartist_sort));
+				break;
+			case 'y':
+				string = g_strdup_printf ("%u", (guint)rhythmdb_entry_get_ulong (entry, RHYTHMDB_PROP_YEAR));
+				break;
+			case 'n':
+				string = g_strdup_printf ("%u", (guint)rhythmdb_entry_get_ulong (entry, RHYTHMDB_PROP_DISC_NUMBER));
+				break;
+			case 'N':
+				string = g_strdup_printf ("%02u", (guint)rhythmdb_entry_get_ulong (entry, RHYTHMDB_PROP_DISC_NUMBER));
+				break;
+			case 'g':
+				string = sanitize_path (rhythmdb_entry_get_string (entry, RHYTHMDB_PROP_GENRE));
+				break;
+			case 'G':
+				string = sanitize_path (rhythmdb_entry_get_string (entry, RHYTHMDB_PROP_GENRE_FOLDED));
 				break;
 			default:
 				string = g_strdup_printf ("%%a%c", *p);
@@ -917,9 +966,7 @@ filepath_parse_pattern (RhythmDB *db,
 				string = sanitize_path (rhythmdb_entry_get_string (entry, RHYTHMDB_PROP_ARTIST_SORTNAME));
 				break;
 			case 'S':
-				t = g_utf8_strdown (rhythmdb_entry_get_string (entry, RHYTHMDB_PROP_ARTIST_SORTNAME), -1);
-				string = sanitize_path (t);
-				g_free (t);
+				string = sanitize_path (rhythmdb_entry_get_string (entry, RHYTHMDB_PROP_ARTIST_SORTNAME_FOLDED));
 				break;
 			case 'n':
 				/* Track number */
@@ -963,7 +1010,7 @@ layout_example_label_update (RBLibrarySource *source)
 	char *format;
 	char *tmp;
 	GMAudioProfile *profile;
-	RhythmDBEntryType entry_type;
+	RhythmDBEntryType *entry_type;
 	RhythmDBEntry *sample_entry;
 
   	profile = gm_audio_profile_choose_get_active (source->priv->preferred_format_menu);
@@ -984,7 +1031,7 @@ layout_example_label_update (RBLibrarySource *source)
 
 	g_object_get (source, "entry-type", &entry_type, NULL);
 	sample_entry = rhythmdb_entry_example_new (source->priv->db, entry_type, NULL);
-	g_boxed_free (RHYTHMDB_TYPE_ENTRY_TYPE, entry_type);
+	g_object_unref (entry_type);
 
 	file_value = filepath_parse_pattern (source->priv->db, file_pattern, sample_entry);
 	path_value = filepath_parse_pattern (source->priv->db, path_pattern, sample_entry);
@@ -1016,7 +1063,8 @@ rb_library_source_layout_path_changed (GConfClient *client,
 				       RBLibrarySource *source)
 {
 	char *value;
-	int i = 0;
+	int active;
+	int i;
 
 	g_return_if_fail (entry != NULL);
 	g_return_if_fail (strcmp (entry->key, CONF_LIBRARY_LAYOUT_PATH) == 0);
@@ -1031,12 +1079,16 @@ rb_library_source_layout_path_changed (GConfClient *client,
 		return;
 	}
 
-	while (library_layout_paths[i].path && strcmp (library_layout_paths[i].path, value) != 0) {
-		i++;
+	active = -1;
+	for (i = 0; library_layout_paths[i].path != NULL; i++) {
+		if (strcmp (library_layout_paths[i].path, value) == 0) {
+			active = i;
+			break;
+		}
 	}
 
 	g_free (value);
-	gtk_combo_box_set_active (GTK_COMBO_BOX (source->priv->layout_path_menu), i);
+	gtk_combo_box_set_active (GTK_COMBO_BOX (source->priv->layout_path_menu), active);
 
 	layout_example_label_update (source);
 }
@@ -1048,7 +1100,8 @@ rb_library_source_layout_filename_changed (GConfClient *client,
 					   RBLibrarySource *source)
 {
 	char *value;
-	int i = 0;
+	int active;
+	int i;
 
 	g_return_if_fail (entry != NULL);
 	g_return_if_fail (strcmp (entry->key, CONF_LIBRARY_LAYOUT_FILENAME) == 0);
@@ -1063,17 +1116,21 @@ rb_library_source_layout_filename_changed (GConfClient *client,
 		return;
 	}
 
-	while (library_layout_filenames[i].path && strcmp (library_layout_filenames[i].path, value) != 0) {
-		i++;
+	active = -1;
+	for (i = 0; library_layout_filenames[i].path != NULL; i++) {
+		if (strcmp (library_layout_filenames[i].path, value) == 0) {
+			active = i;
+			break;
+		}
 	}
-
 	g_free (value);
-	gtk_combo_box_set_active (GTK_COMBO_BOX (source->priv->layout_filename_menu), i);
+
+	gtk_combo_box_set_active (GTK_COMBO_BOX (source->priv->layout_filename_menu), active);
 
 	layout_example_label_update (source);
 }
 
-/**
+/*
  * Build the absolute filename for the specified track.
  *
  * The base path is the extern variable 'base_path', the format to use
@@ -1083,7 +1140,7 @@ rb_library_source_layout_filename_changed (GConfClient *client,
  * Stolen from Sound-Juicer
  */
 static char*
-build_filename (RBLibrarySource *source, RhythmDBEntry *entry)
+build_filename (RBLibrarySource *source, RhythmDBEntry *entry, const char *extension)
 {
 	GFile *library_location;
 	GFile *dir;
@@ -1092,19 +1149,16 @@ build_filename (RBLibrarySource *source, RhythmDBEntry *entry)
 	char *realpath;
 	char *filename;
 	char *string = NULL;
-	char *extension = NULL;
 	char *tmp;
 	GSList *list;
 	char *layout_path;
 	char *layout_filename;
-	char *preferred_format;
 
 	list = eel_gconf_get_string_list (CONF_LIBRARY_LOCATION);
 	layout_path = eel_gconf_get_string (CONF_LIBRARY_LAYOUT_PATH);
 	layout_filename = eel_gconf_get_string (CONF_LIBRARY_LAYOUT_FILENAME);
-	preferred_format = eel_gconf_get_string (CONF_LIBRARY_PREFERRED_FORMAT);
 
-	if (list == NULL || layout_path == NULL || layout_filename == NULL || preferred_format == NULL) {
+	if (list == NULL || layout_path == NULL || layout_filename == NULL) {
 		/* emit warning */
 		rb_debug ("Could not retrieve settings from GConf");
 		goto out;
@@ -1121,33 +1175,6 @@ build_filename (RBLibrarySource *source, RhythmDBEntry *entry)
 	g_object_unref (library_location);
 	g_free (realpath);
 
-	if (g_str_has_prefix (rhythmdb_entry_get_string (entry, RHYTHMDB_PROP_MIMETYPE), "audio/x-raw")) {
-		GMAudioProfile *profile;
-		profile = gm_audio_profile_lookup (preferred_format);
-		if (profile)
-			extension = g_strdup (gm_audio_profile_get_extension (profile));
-	}
-
-	if (extension == NULL) {
-		const char *uri;
-		const char *loc;
-		char *tmp;
-
-		/* use the old extension. strip anything after a '?' for http/daap/etc */
-		uri = rhythmdb_entry_get_string (entry, RHYTHMDB_PROP_LOCATION);
-		loc = g_utf8_strrchr (uri, -1, '.');
-		if (loc == NULL)
-			loc = g_utf8_strrchr (uri, -1, '/');
-		if (loc == NULL)
-			loc = uri;
-
-		extension = g_strdup (loc + 1);
-
-		tmp = g_utf8_strchr (extension, -1, '?');
-		if (tmp)
-			*tmp = '\0';
-	}
-
 	realfile = filepath_parse_pattern (source->priv->db, layout_filename, entry);
 	if (extension) {
 		filename = g_strdup_printf ("%s.%s", realfile, extension);
@@ -1158,7 +1185,6 @@ build_filename (RBLibrarySource *source, RhythmDBEntry *entry)
 
 	dest = g_file_resolve_relative_path (dir, filename);
 	g_object_unref (dir);
-	g_free (extension);
 	g_free (filename);
 
 	string = g_file_get_uri (dest);
@@ -1167,7 +1193,6 @@ build_filename (RBLibrarySource *source, RhythmDBEntry *entry)
 	rb_slist_deep_free (list);
 	g_free (layout_path);
 	g_free (layout_filename);
-	g_free (preferred_format);
 
 	return string;
 }
@@ -1197,33 +1222,80 @@ impl_can_paste (RBSource *asource)
 	return can_paste;
 }
 
-static void
-completed_cb (RhythmDBEntry *entry, const char *dest, guint64 dest_size, GError *error, RBLibrarySource *source)
+static char *
+get_dest_uri_cb (RBTrackTransferBatch *batch,
+		 RhythmDBEntry *entry,
+		 const char *mediatype,
+		 const char *extension,
+		 RBLibrarySource *source)
 {
-	if (error == NULL) {
-		rhythmdb_add_uri (source->priv->db, dest);
-	} else {
-		if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_EXISTS)) {
+	char *dest;
+	char *sane_dest;
+
+	dest = build_filename (source, entry, extension);
+	if (dest == NULL) {
+		rb_debug ("could not create destination path for entry");
+		return NULL;
+	}
+
+	sane_dest = rb_sanitize_uri_for_filesystem (dest);
+	g_free (dest);
+	rb_debug ("destination URI for %s is %s",
+		  rhythmdb_entry_get_string (entry, RHYTHMDB_PROP_LOCATION),
+		  sane_dest);
+	return sane_dest;
+}
+
+static void
+track_done_cb (RBTrackTransferBatch *batch,
+	       RhythmDBEntry *entry,
+	       const char *dest,
+	       guint64 dest_size,
+	       const char *dest_mediatype,
+	       GError *error,
+	       RBLibrarySource *source)
+{
+	if (error != NULL) {
+		/* probably want to cancel the batch on some errors:
+		 * - out of disk space / read only
+		 * - source has vanished (hmm, how would we know?)
+		 *
+		 * and we probably want to do something intelligent about some other errors:
+		 * - encoder pipeline errors?  hmm.
+		 */
+		if (g_error_matches (error, RB_ENCODER_ERROR, RB_ENCODER_ERROR_OUT_OF_SPACE) ||
+		    g_error_matches (error, RB_ENCODER_ERROR, RB_ENCODER_ERROR_DEST_READ_ONLY)) {
+			rb_debug ("fatal transfer error: %s", error->message);
+			rb_track_transfer_batch_cancel (batch);
+			rb_error_dialog (NULL, _("Error transferring track"), "%s", error->message);
+		} else if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_EXISTS)) {
 			rb_debug ("not displaying 'file exists' error for %s", dest);
 		} else {
 			rb_error_dialog (NULL, _("Error transferring track"), "%s", error->message);
 		}
+	} else {
+		/* could probably do something smarter here to avoid
+		 * re-reading tags etc.
+		 */
+		rhythmdb_add_uri (source->priv->db, dest);
 	}
 }
 
-static void
+static RBTrackTransferBatch *
 impl_paste (RBSource *asource, GList *entries)
 {
 	RBLibrarySource *source = RB_LIBRARY_SOURCE (asource);
-	RBRemovableMediaManager *rm_mgr;
+	RBTrackTransferQueue *xferq;
 	GList *l;
 	GSList *sl;
 	RBShell *shell;
-	RhythmDBEntryType source_entry_type;
+	RhythmDBEntryType *source_entry_type;
+	RBTrackTransferBatch *batch;
+	gboolean start_batch = FALSE;
 
 	if (impl_can_paste (asource) == FALSE) {
 		g_warning ("RBLibrarySource impl_paste called when gconf keys unset");
-		return;
+		return NULL;
 	}
 
 	sl = eel_gconf_get_string_list (CONF_LIBRARY_LOCATION);
@@ -1232,15 +1304,17 @@ impl_paste (RBSource *asource, GList *entries)
 		      "shell", &shell,
 		      "entry-type", &source_entry_type,
 		      NULL);
-	g_object_get (shell, "removable-media-manager", &rm_mgr, NULL);
+	g_object_get (shell, "track-transfer-queue", &xferq, NULL);
 	g_object_unref (shell);
+
+	batch = rb_track_transfer_batch_new (NULL, NULL, NULL, G_OBJECT (source));
+	g_signal_connect_object (batch, "get-dest-uri", G_CALLBACK (get_dest_uri_cb), source, 0);
+	g_signal_connect_object (batch, "track-done", G_CALLBACK (track_done_cb), source, 0);
 
 	for (l = entries; l != NULL; l = g_list_next (l)) {
 		RhythmDBEntry *entry = (RhythmDBEntry *)l->data;
-		RhythmDBEntryType entry_type;
+		RhythmDBEntryType *entry_type;
 		RBSource *source_source;
-		char *dest;
-		char *sane_dest;
 
 		rb_debug ("pasting entry %s", rhythmdb_entry_get_string (entry, RHYTHMDB_PROP_LOCATION));
 
@@ -1257,22 +1331,20 @@ impl_paste (RBSource *asource, GList *entries)
 			continue;
 		}
 
-		dest = build_filename (source, entry);
-		if (dest == NULL) {
-			rb_debug ("could not create destination path for entry");
-			continue;
-		}
-
-		sane_dest = rb_sanitize_uri_for_filesystem (dest);
-		g_free (dest);
-
-		rb_removable_media_manager_queue_transfer (rm_mgr, entry,
-							  sane_dest, NULL,
-							  (RBTransferCompleteCallback)completed_cb, source);
+		rb_track_transfer_batch_add (batch, entry);
+		start_batch = TRUE;
 	}
-	g_boxed_free (RHYTHMDB_TYPE_ENTRY_TYPE, source_entry_type);
+	g_object_unref (source_entry_type);
 
-	g_object_unref (rm_mgr);
+	if (start_batch) {
+		rb_track_transfer_queue_start_batch (xferq, batch);
+	} else {
+		g_object_unref (batch);
+		batch = NULL;
+	}
+
+	g_object_unref (xferq);
+	return batch;
 }
 
 static guint
@@ -1288,14 +1360,128 @@ impl_want_uri (RBSource *source, const char *uri)
 	return 0;
 }
 
+static void
+import_job_status_changed_cb (RhythmDBImportJob *job, int total, int imported, RBLibrarySource *source)
+{
+	RhythmDBImportJob *head = RHYTHMDB_IMPORT_JOB (source->priv->import_jobs->data);
+	if (job == head) {		/* it was inevitable */
+		rb_source_notify_status_changed (RB_SOURCE (source));
+	}
+}
+
+static void
+import_job_complete_cb (RhythmDBImportJob *job, int total, RBLibrarySource *source)
+{
+	rb_debug ("import job complete");
+
+	/* maybe show a notification here? */
+
+	source->priv->import_jobs = g_list_remove (source->priv->import_jobs, job);
+	g_object_unref (job);
+}
+
 static gboolean
-impl_add_uri (RBSource *asource, const char *uri, const char *title, const char *genre)
+start_import_job (RBLibrarySource *source)
+{
+	RhythmDBImportJob *job;
+	source->priv->start_import_job_id = 0;
+
+	rb_debug ("starting import job");
+	job = RHYTHMDB_IMPORT_JOB (source->priv->import_jobs->data);
+
+	rhythmdb_import_job_start (job);
+
+	return FALSE;
+}
+
+static RhythmDBImportJob *
+maybe_create_import_job (RBLibrarySource *source)
+{
+	RhythmDBImportJob *job;
+	if (source->priv->import_jobs == NULL || source->priv->start_import_job_id == 0) {
+
+		rb_debug ("creating new import job");
+		job = rhythmdb_import_job_new (source->priv->db,
+					       RHYTHMDB_ENTRY_TYPE_SONG,
+					       RHYTHMDB_ENTRY_TYPE_IGNORE,
+					       RHYTHMDB_ENTRY_TYPE_IMPORT_ERROR);
+
+		g_signal_connect_object (job,
+					 "status-changed",
+					 G_CALLBACK (import_job_status_changed_cb),
+					 source, 0);
+		g_signal_connect_object (job,
+					 "complete",
+					 G_CALLBACK (import_job_complete_cb),
+					 source, 0);
+		source->priv->import_jobs = g_list_prepend (source->priv->import_jobs, job);
+	} else {
+		rb_debug ("using existing unstarted import job");
+		job = RHYTHMDB_IMPORT_JOB (source->priv->import_jobs->data);
+	}
+
+	/* allow some time for more URIs to be added if we're importing a bunch of things */
+	if (source->priv->start_import_job_id != 0) {
+		g_source_remove (source->priv->start_import_job_id);
+	}
+	source->priv->start_import_job_id = g_timeout_add (250, (GSourceFunc) start_import_job, source);
+
+	return job;
+}
+
+struct ImportJobCallbackData {
+	char *uri;
+	RBSource *source;
+	RBSourceAddCallback callback;
+	gpointer data;
+	GDestroyNotify destroy_data;
+};
+
+static void
+import_job_callback_destroy (struct ImportJobCallbackData *data)
+{
+	if (data->destroy_data != NULL) {
+		data->destroy_data (data->data);
+	}
+	g_object_unref (data->source);
+	g_free (data->uri);
+	g_free (data);
+}
+
+static void
+import_job_callback_cb (RhythmDBImportJob *job, int total, struct ImportJobCallbackData *data)
+{
+	data->callback (data->source, data->uri, data->data);
+}
+
+static void
+impl_add_uri (RBSource *asource,
+	      const char *uri,
+	      const char *title,
+	      const char *genre,
+	      RBSourceAddCallback callback,
+	      gpointer data,
+	      GDestroyNotify destroy_data)
 {
 	RBLibrarySource *source = RB_LIBRARY_SOURCE (asource);
-	/* FIXME should be synchronous */
+	RhythmDBImportJob *job;
+
+	job = maybe_create_import_job (source);
+
 	rb_debug ("adding uri %s to library", uri);
-	rhythmdb_add_uri (source->priv->db, uri);
-	return TRUE;
+	rhythmdb_import_job_add_uri (job, uri);
+
+	if (callback != NULL) {
+		struct ImportJobCallbackData *cbdata;
+
+		cbdata = g_new0 (struct ImportJobCallbackData, 1);
+		cbdata->uri = g_strdup (uri);
+		cbdata->source = g_object_ref (source);
+		cbdata->callback = callback;
+		cbdata->data = data;
+		cbdata->destroy_data = destroy_data;
+		g_signal_connect_data (job, "complete", G_CALLBACK (import_job_callback_cb), cbdata, (GClosureNotify) import_job_callback_destroy, 0);
+	}
 }
 
 static void
@@ -1306,7 +1492,7 @@ rb_library_source_add_child_source (const char *path, RBLibrarySource *library_s
 	RBShell *shell;
 	char *name;
 	GdkPixbuf *icon;
-	RhythmDBEntryType entry_type;
+	RhythmDBEntryType *entry_type;
 	char *sort_column;
 	int sort_order;
 	GFile *file;
@@ -1343,7 +1529,7 @@ rb_library_source_add_child_source (const char *path, RBLibrarySource *library_s
 	rb_shell_append_source (shell, source, RB_SOURCE (library_source));
 	library_source->priv->child_sources = g_list_prepend (library_source->priv->child_sources, source);
 
-	g_boxed_free (RHYTHMDB_TYPE_ENTRY_TYPE, entry_type);
+	g_object_unref (entry_type);
 	g_object_unref (shell);
 	g_free (name);
 }
@@ -1365,3 +1551,14 @@ rb_library_source_sync_child_sources (RBLibrarySource *source)
 	rb_slist_deep_free (list);
 }
 
+static void
+impl_get_status (RBSource *source, char **text, char **progress_text, float *progress)
+{
+	RB_SOURCE_CLASS (rb_library_source_parent_class)->impl_get_status (source, text, progress_text, progress);
+	RBLibrarySource *lsource = RB_LIBRARY_SOURCE (source);
+
+	if (lsource->priv->import_jobs != NULL) {
+		RhythmDBImportJob *job = RHYTHMDB_IMPORT_JOB (lsource->priv->import_jobs->data);
+		_rb_source_set_import_status (source, job, progress_text, progress);
+	}
+}

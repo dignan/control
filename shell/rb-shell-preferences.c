@@ -61,6 +61,7 @@
 #include "rb-debug.h"
 #include "eel-gconf-extensions.h"
 #include "rb-preferences.h"
+#include "rb-shell.h"
 
 static void rb_shell_preferences_class_init (RBShellPreferencesClass *klass);
 static void rb_shell_preferences_init (RBShellPreferences *shell_preferences);
@@ -106,19 +107,23 @@ struct RBShellPreferencesPrivate
 	GtkWidget *artist_check;
 	GtkWidget *album_check;
 	GtkWidget *genre_check;
+	GtkWidget *comment_check;
 	GtkWidget *duration_check;
 	GtkWidget *track_check;
 	GtkWidget *rating_check;
 	GtkWidget *play_count_check;
 	GtkWidget *last_played_check;
 	GtkWidget *first_seen_check;
+	GtkWidget *bpm_check;
 	GtkWidget *quality_check;
 	GtkWidget *year_check;
 	GtkWidget *location_check;
+	GtkWidget *general_prefs_plugin_box;
 
 	GtkWidget *xfade_backend_check;
 	GtkWidget *transition_duration;
 	GtkWidget *network_buffer_size;
+	GtkWidget *playback_prefs_plugin_box;
 
 	GSList *browser_views_group;
 
@@ -203,7 +208,6 @@ rb_shell_preferences_init (RBShellPreferences *shell_preferences)
 
 	gtk_container_set_border_width (GTK_CONTAINER (shell_preferences), 5);
 	gtk_box_set_spacing (GTK_BOX (content_area), 2);
-	gtk_dialog_set_has_separator (GTK_DIALOG (shell_preferences), FALSE);
 
 	builder = rb_builder_load ("general-prefs.ui", shell_preferences);
 
@@ -216,6 +220,8 @@ rb_shell_preferences_init (RBShellPreferences *shell_preferences)
 		GTK_WIDGET (gtk_builder_get_object (builder, "album_check"));
 	shell_preferences->priv->genre_check =
 		GTK_WIDGET (gtk_builder_get_object (builder, "genre_check"));
+	shell_preferences->priv->comment_check =
+		GTK_WIDGET (gtk_builder_get_object (builder, "comment_check"));
 	shell_preferences->priv->duration_check =
 		GTK_WIDGET (gtk_builder_get_object (builder, "duration_check"));
 	shell_preferences->priv->track_check =
@@ -228,6 +234,8 @@ rb_shell_preferences_init (RBShellPreferences *shell_preferences)
 		GTK_WIDGET (gtk_builder_get_object (builder, "last_played_check"));
 	shell_preferences->priv->quality_check =
 		GTK_WIDGET (gtk_builder_get_object (builder, "quality_check"));
+	shell_preferences->priv->bpm_check =
+		GTK_WIDGET (gtk_builder_get_object (builder, "bpm_check"));
 	shell_preferences->priv->year_check =
 		GTK_WIDGET (gtk_builder_get_object (builder, "year_check"));
 	shell_preferences->priv->first_seen_check =
@@ -261,6 +269,11 @@ rb_shell_preferences_init (RBShellPreferences *shell_preferences)
 	eel_gconf_notification_add (CONF_UI_DIR,
 				    (GConfClientNotifyFunc) rb_shell_preferences_ui_pref_changed,
 				    shell_preferences);
+
+	/* box for stuff added by plugins */
+	shell_preferences->priv->general_prefs_plugin_box =
+		GTK_WIDGET (gtk_builder_get_object (builder, "plugin_box"));
+
 	g_object_unref (builder);
 
 	/* playback preferences */
@@ -276,6 +289,8 @@ rb_shell_preferences_init (RBShellPreferences *shell_preferences)
 		GTK_WIDGET (gtk_builder_get_object (builder, "duration"));
 	shell_preferences->priv->network_buffer_size =
 		GTK_WIDGET (gtk_builder_get_object (builder, "network_buffer_size"));
+	shell_preferences->priv->playback_prefs_plugin_box =
+		GTK_WIDGET (gtk_builder_get_object (builder, "plugin_box"));
 
 	g_signal_connect_object (shell_preferences->priv->xfade_backend_check,
 				 "toggled",
@@ -450,6 +465,8 @@ rb_shell_preferences_column_check_changed_cb (GtkCheckButton *butt,
 		colname = "RHYTHMDB_PROP_ALBUM";
 	else if (butt == GTK_CHECK_BUTTON (shell_preferences->priv->genre_check))
 		colname = "RHYTHMDB_PROP_GENRE";
+	else if (butt == GTK_CHECK_BUTTON (shell_preferences->priv->comment_check))
+		colname = "RHYTHMDB_PROP_COMMENT";
 	else if (butt == GTK_CHECK_BUTTON (shell_preferences->priv->duration_check))
 		colname = "RHYTHMDB_PROP_DURATION";
 	else if (butt == GTK_CHECK_BUTTON (shell_preferences->priv->track_check))
@@ -462,6 +479,8 @@ rb_shell_preferences_column_check_changed_cb (GtkCheckButton *butt,
 		colname = "RHYTHMDB_PROP_LAST_PLAYED";
 	else if (butt == GTK_CHECK_BUTTON (shell_preferences->priv->year_check))
 		colname = "RHYTHMDB_PROP_DATE";
+	else if (butt == GTK_CHECK_BUTTON (shell_preferences->priv->bpm_check))
+		colname = "RHYTHMDB_PROP_BPM";
 	else if (butt == GTK_CHECK_BUTTON (shell_preferences->priv->quality_check))
 		colname = "RHYTHMDB_PROP_BITRATE";
 	else if (butt == GTK_CHECK_BUTTON (shell_preferences->priv->first_seen_check))
@@ -537,6 +556,9 @@ rb_shell_preferences_sync (RBShellPreferences *shell_preferences)
 			       				 shell_preferences->priv->genre_check,
 							 columns, "RHYTHMDB_PROP_GENRE");
 		rb_shell_preferences_sync_column_button (shell_preferences,
+							 shell_preferences->priv->comment_check,
+							 columns, "RHYTHMDB_PROP_COMMENT");
+		rb_shell_preferences_sync_column_button (shell_preferences,
 			       				 shell_preferences->priv->duration_check,
 							 columns, "RHYTHMDB_PROP_DURATION");
 		rb_shell_preferences_sync_column_button (shell_preferences,
@@ -558,8 +580,11 @@ rb_shell_preferences_sync (RBShellPreferences *shell_preferences)
 			       				 shell_preferences->priv->first_seen_check,
 							 columns, "RHYTHMDB_PROP_FIRST_SEEN");
 		rb_shell_preferences_sync_column_button (shell_preferences,
-			       				 shell_preferences->priv->quality_check,
+							 shell_preferences->priv->quality_check,
 							 columns, "RHYTHMDB_PROP_BITRATE");
+		rb_shell_preferences_sync_column_button (shell_preferences,
+							 shell_preferences->priv->bpm_check,
+							 columns, "RHYTHMDB_PROP_BPM");
 		rb_shell_preferences_sync_column_button (shell_preferences,
 			       				 shell_preferences->priv->location_check,
 							 columns, "RHYTHMDB_PROP_LOCATION");
@@ -677,3 +702,86 @@ rb_shell_preferences_network_buffer_size_cb (GtkRange *range,
 	eel_gconf_set_integer (CONF_PLAYER_NETWORK_BUFFER_SIZE, (int)v);
 }
 
+static GtkWidget *
+get_box_for_location (RBShellPreferences *prefs, RBShellPrefsUILocation location)
+{
+	switch (location) {
+	case RB_SHELL_PREFS_UI_LOCATION_GENERAL:
+		return prefs->priv->general_prefs_plugin_box;
+	case RB_SHELL_PREFS_UI_LOCATION_PLAYBACK:
+		return prefs->priv->playback_prefs_plugin_box;
+	default:
+		g_assert_not_reached();
+	}
+}
+
+/**
+ * rb_shell_preferences_add_widget:
+ * @shell: the #RBShellPreferences
+ * @widget: the #GtkWidget to insert into the preferences window
+ * @location: the location at which to insert the widget
+ * @expand: whether the widget should be given extra space
+ * @fill: whether the widget should fill all space allocated to it
+ *
+ * Adds a widget to the preferences window.  See #gtk_box_pack_start for
+ * details on how the expand and fill parameters work.  This function can be
+ * used to add widgets to the 'general' and 'playback' pages.
+ */
+void
+rb_shell_preferences_add_widget (RBShellPreferences *prefs,
+				 GtkWidget *widget,
+				 RBShellPrefsUILocation location,
+				 gboolean expand,
+				 gboolean fill)
+{
+	GtkWidget *box;
+
+	box = get_box_for_location (prefs, location);
+	gtk_box_pack_start (GTK_BOX (box), widget, expand, fill, 0);
+}
+
+/**
+ * rb_shell_preferences_remove_widget:
+ * @shell: the #RBShellPreferences
+ * @widget: the #GtkWidget to remove from the preferences window
+ * @location: the UI location to which the widget was originally added
+ *
+ * Removes a widget added with #rb_shell_preferences_add_widget from the preferences window.
+ */
+void
+rb_shell_preferences_remove_widget (RBShellPreferences *prefs,
+				    GtkWidget *widget,
+				    RBShellPrefsUILocation location)
+{
+	GtkWidget *box;
+
+	box = get_box_for_location (prefs, location);
+	gtk_container_remove (GTK_CONTAINER (box), widget);
+}
+
+#define ENUM_ENTRY(NAME, DESC) { NAME, "" #NAME "", DESC }
+
+/**
+ * RBShellPrefsUILocation:
+ * @RB_SHELL_PREFS_UI_LOCATION_GENERAL: The "general" preferences page
+ * @RB_SHELL_PREFS_UI_LOCATION_PLAYBACK: THe "playback" preferences page
+ *
+ * Locations available for adding new widgets to the preferences dialog.
+ */
+GType
+rb_shell_prefs_ui_location_get_type (void)
+{
+	static GType etype = 0;
+
+	if (etype == 0)	{
+		static const GEnumValue values[] = {
+			ENUM_ENTRY (RB_SHELL_PREFS_UI_LOCATION_GENERAL, "general"),
+			ENUM_ENTRY (RB_SHELL_PREFS_UI_LOCATION_PLAYBACK, "playback"),
+			{ 0, 0, 0 }
+		};
+
+		etype = g_enum_register_static ("RBShellPrefsUILocation", values);
+	}
+
+	return etype;
+}

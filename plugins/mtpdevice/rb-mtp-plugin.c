@@ -109,7 +109,6 @@ static void rb_mtp_plugin_device_removed (LibHalContext *context, const char *ud
 static gboolean rb_mtp_plugin_setup_dbus_hal_connection (RBMtpPlugin *plugin);
 #endif
 
-static void rb_mtp_plugin_eject  (GtkAction *action, RBSource *source);
 static void rb_mtp_plugin_rename (GtkAction *action, RBSource *source);
 static void rb_mtp_plugin_properties (GtkAction *action, RBSource *source);
 
@@ -120,9 +119,6 @@ RB_PLUGIN_REGISTER(RBMtpPlugin, rb_mtp_plugin)
 
 static GtkActionEntry rb_mtp_plugin_actions [] =
 {
-	{ "MTPSourceEject", GNOME_MEDIA_EJECT, N_("_Eject"), NULL,
-	  N_("Eject MTP-device"),
-	  G_CALLBACK (rb_mtp_plugin_eject) },
 	{ "MTPSourceRename", NULL, N_("_Rename"), NULL,
 	  N_("Rename MTP-device"),
 	  G_CALLBACK (rb_mtp_plugin_rename) },
@@ -181,12 +177,13 @@ impl_activate (RBPlugin *bplugin, RBShell *shell)
 
 	plugin->shell = shell;
 
-	g_object_get (G_OBJECT (shell),
+	g_object_get (shell,
 		     "ui-manager", &uimanager,
 		     "removable-media-manager", &rmm,
 		     NULL);
 
 	/* ui */
+	rb_media_player_source_init_actions (shell);
 	plugin->action_group = gtk_action_group_new ("MTPActions");
 	gtk_action_group_set_translation_domain (plugin->action_group,
 						 GETTEXT_PACKAGE);
@@ -197,7 +194,7 @@ impl_activate (RBPlugin *bplugin, RBShell *shell)
 	gtk_ui_manager_insert_action_group (uimanager, plugin->action_group, 0);
 	file = rb_plugin_find_file (bplugin, "mtp-ui.xml");
 	plugin->ui_merge_id = gtk_ui_manager_add_ui_from_file (uimanager, file, NULL);
-	g_object_unref (G_OBJECT (uimanager));
+	g_object_unref (uimanager);
 
 	/* device detection */
 #if defined(HAVE_GUDEV)
@@ -251,7 +248,7 @@ impl_deactivate (RBPlugin *bplugin, RBShell *shell)
 	GtkUIManager *uimanager = NULL;
 	RBRemovableMediaManager *rmm = NULL;
 
-	g_object_get (G_OBJECT (shell),
+	g_object_get (shell,
 		      "ui-manager", &uimanager,
 		      "removable-media-manager", &rmm,
 		      NULL);
@@ -285,13 +282,6 @@ impl_deactivate (RBPlugin *bplugin, RBShell *shell)
 
 	g_object_unref (uimanager);
 	g_object_unref (rmm);
-}
-
-static void
-rb_mtp_plugin_eject (GtkAction *action, RBSource *source)
-{
-	g_return_if_fail (RB_IS_MTP_SOURCE (source));
-	rb_source_delete_thyself (source);
 }
 
 static void
@@ -343,6 +333,12 @@ create_source_device_cb (RBRemovableMediaManager *rmm, GObject *device_obj, RBMt
 		return NULL;
 	}
 
+	/* check that it's not an iPhone or iPod Touch */
+	if (g_udev_device_get_property_as_boolean (device, "USBMUX_SUPPORTED")) {
+		rb_debug ("device %s is supported through AFC, ignore", g_udev_device_get_name (device));
+		return NULL;
+	}
+
 	device_number = g_udev_device_get_device_number (device);
 	if (device_number == 0) {
 		rb_debug ("can't get udev device number for device %s", g_udev_device_get_name (device));
@@ -373,15 +369,17 @@ create_source_device_cb (RBRemovableMediaManager *rmm, GObject *device_obj, RBMt
 			}
 
 			rb_debug ("device matched, creating a source");
-			source = rb_mtp_source_new (plugin->shell, RB_PLUGIN (plugin), &raw_devices[i]);
+			source = rb_mtp_source_new (plugin->shell, RB_PLUGIN (plugin), device, &raw_devices[i]);
 
 			plugin->mtp_sources = g_list_prepend (plugin->mtp_sources, source);
 			g_signal_connect_object (G_OBJECT (source),
 						"deleted", G_CALLBACK (source_deleted_cb),
 						plugin, 0);
+			free (raw_devices);
 			return source;
 		}
 	}
+	free (raw_devices);
 
 	rb_debug ("device didn't match anything");
 	return NULL;
@@ -425,7 +423,7 @@ rb_mtp_plugin_maybe_add_source (RBMtpPlugin *plugin, const char *udi, LIBMTP_raw
 
 			rb_shell_append_source (plugin->shell, source, NULL);
 			plugin->mtp_sources = g_list_prepend (plugin->mtp_sources, source);
-			g_signal_connect_object (G_OBJECT (source),
+			g_signal_connect_object (source,
 						"deleted", G_CALLBACK (source_deleted_cb),
 						plugin, 0);
 		}

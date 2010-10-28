@@ -31,10 +31,12 @@
 
 #include <gtk/gtk.h>
 
-#include "rb-source-group.h"
-#include "rb-source-search.h"
-#include "rb-entry-view.h"
-#include "rb-shell-preferences.h"
+#include <sources/rb-source-group.h>
+#include <sources/rb-source-search.h>
+#include <widgets/rb-entry-view.h>
+#include <shell/rb-shell-preferences.h>
+#include <shell/rb-track-transfer-batch.h>
+#include <rhythmdb/rhythmdb-import-job.h>
 
 G_BEGIN_DECLS
 
@@ -74,6 +76,7 @@ GType rb_source_search_type_get_type (void);
 
 typedef gboolean (*RBSourceFeatureFunc) (RBSource *source);
 typedef const char * (*RBSourceStringFunc) (RBSource *source);
+typedef void (*RBSourceAddCallback) (RBSource *source, const char *uri, gpointer data);
 
 struct _RBSource
 {
@@ -115,7 +118,7 @@ struct _RBSourceClass
 
 	GList *		(*impl_cut)		(RBSource *source);
 	GList *		(*impl_copy)		(RBSource *source);
-	void		(*impl_paste)		(RBSource *source, GList *entries);
+	RBTrackTransferBatch *(*impl_paste)	(RBSource *source, GList *entries);
 	void		(*impl_delete)		(RBSource *source);
 	void		(*impl_add_to_queue)	(RBSource *source, RBSource *queue);
 	void		(*impl_move_to_trash)	(RBSource *source);
@@ -124,7 +127,13 @@ struct _RBSourceClass
 
 	gboolean	(*impl_try_playlist)	(RBSource *source);
 	guint		(*impl_want_uri)	(RBSource *source, const char *uri);
-	gboolean	(*impl_add_uri)		(RBSource *source, const char *uri, const char *title, const char *genre);
+	void		(*impl_add_uri)		(RBSource *source,
+						 const char *uri,
+						 const char *title,
+						 const char *genre,
+						 RBSourceAddCallback callback,
+						 gpointer data,
+						 GDestroyNotify destroy_data);
 	gboolean	(*impl_uri_is_source)	(RBSource *source, const char *uri);
 
 	gboolean	(*impl_can_pause)	(RBSource *source);
@@ -184,7 +193,7 @@ gboolean	rb_source_can_show_properties	(RBSource *source);
 
 GList *		rb_source_cut			(RBSource *source);
 GList *		rb_source_copy			(RBSource *source);
-void		rb_source_paste			(RBSource *source, GList *entries);
+RBTrackTransferBatch *rb_source_paste			(RBSource *source, GList *entries);
 void		rb_source_delete		(RBSource *source);
 void		rb_source_add_to_queue		(RBSource *source, RBSource *queue);
 void		rb_source_move_to_trash		(RBSource *source);
@@ -194,7 +203,13 @@ void		rb_source_song_properties	(RBSource *source);
 gboolean	rb_source_try_playlist		(RBSource *source);
 guint		rb_source_want_uri		(RBSource *source, const char *uri);
 gboolean	rb_source_uri_is_source		(RBSource *source, const char *uri);
-gboolean	rb_source_add_uri		(RBSource *source, const char *uri, const char *title, const char *genre);
+void		rb_source_add_uri		(RBSource *source,
+						 const char *uri,
+						 const char *title,
+						 const char *genre,
+						 RBSourceAddCallback callback,
+						 gpointer data,
+						 GDestroyNotify destroy_data);
 
 gboolean	rb_source_can_pause		(RBSource *source);
 RBSourceEOFType	rb_source_handle_eos		(RBSource *source);
@@ -232,6 +247,11 @@ void		_rb_action_group_add_source_actions (GtkActionGroup *group,
 
 gboolean	_rb_source_check_entry_type	(RBSource *source,
 						 RhythmDBEntry *entry);
+
+void		_rb_source_set_import_status	(RBSource *source,
+						 RhythmDBImportJob *job,
+						 char **progress_text,
+						 float *progress);
 
 G_END_DECLS
 

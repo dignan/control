@@ -48,7 +48,8 @@ typedef struct
 {
 	GObjectClass obj_class;
 
-	GHashTable *mime_caps_table;
+	GHashTable *media_caps_table;
+	GHashTable *media_extension_table;
 } RBEncoderGstClass;
 
 typedef struct

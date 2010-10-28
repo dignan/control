@@ -85,6 +85,7 @@
 #include "rhythmdb.h"
 #include "rb-podcast-manager.h"
 #include "rb-marshal.h"
+#include "rb-missing-plugins.h"
 
 /* Play Orders */
 #include "rb-play-order-linear.h"
@@ -136,9 +137,9 @@ static void rb_shell_player_set_playing_source_internal (RBShellPlayer *player,
 static void rb_shell_player_sync_with_source (RBShellPlayer *player);
 static void rb_shell_player_sync_with_selected_source (RBShellPlayer *player);
 static void rb_shell_player_entry_changed_cb (RhythmDB *db,
-							RhythmDBEntry *entry,
-				       		GSList *changes,
-				       		RBShellPlayer *player);
+					      RhythmDBEntry *entry,
+					      GValueArray *changes,
+					      RBShellPlayer *player);
 
 static void rb_shell_player_entry_activated_cb (RBEntryView *view,
 						RhythmDBEntry *entry,
@@ -147,8 +148,6 @@ static void rb_shell_player_property_row_activated_cb (RBPropertyView *view,
 						       const char *name,
 						       RBShellPlayer *player);
 static void rb_shell_player_sync_volume (RBShellPlayer *player, gboolean notify, gboolean set_volume);
-static void rb_shell_player_sync_replaygain (RBShellPlayer *player,
-                                             RhythmDBEntry *entry);
 static void tick_cb (RBPlayer *player, RhythmDBEntry *entry, gint64 elapsed, gint64 duration, gpointer data);
 static void error_cb (RBPlayer *player, RhythmDBEntry *entry, const GError *err, gpointer data);
 static void missing_plugins_cb (RBPlayer *player, RhythmDBEntry *entry, const char **details, const char **descriptions, RBShellPlayer *sp);
@@ -185,6 +184,10 @@ static void rb_shell_player_extra_metadata_cb (RhythmDB *db,
 					       GValue *metadata,
 					       RBShellPlayer *player);
 
+static gboolean rb_shell_player_open_location (RBShellPlayer *player,
+					       RhythmDBEntry *entry,
+					       RBPlayerPlayType play_type,
+					       GError **error);
 static gboolean rb_shell_player_do_next_internal (RBShellPlayer *player,
 						  gboolean from_eos,
 						  gboolean allow_stop,
@@ -252,6 +255,7 @@ struct RBShellPlayerPrivate
 	RBPlayOrder *queue_play_order;
 
 	GQueue *playlist_urls;
+	GCancellable *parser_cancellable;
 
 	RBHeader *header_widget;
 	RBStatusbar *statusbar_widget;
@@ -296,7 +300,6 @@ enum
 	PLAYING_SONG_CHANGED,
 	PLAYING_URI_CHANGED,
 	PLAYING_SONG_PROPERTY_CHANGED,
-	MISSING_PLUGINS,
 	ELAPSED_NANO_CHANGED,
 	LAST_SIGNAL
 };
@@ -351,6 +354,11 @@ rb_shell_player_class_init (RBShellPlayerClass *klass)
 	object_class->set_property = rb_shell_player_set_property;
 	object_class->get_property = rb_shell_player_get_property;
 
+	/**
+	 * RBShellPlayer:source:
+	 *
+	 * The current source that is selected for playback.
+	 */
 	g_object_class_install_property (object_class,
 					 PROP_SOURCE,
 					 g_param_spec_object ("source",
@@ -359,6 +367,11 @@ rb_shell_player_class_init (RBShellPlayerClass *klass)
 							      RB_TYPE_SOURCE,
 							      G_PARAM_READWRITE));
 
+	/**
+	 * RBShellPlayer:ui-manager:
+	 *
+	 * The GtkUIManager
+	 */
 	g_object_class_install_property (object_class,
 					 PROP_UI_MANAGER,
 					 g_param_spec_object ("ui-manager",
@@ -367,6 +380,11 @@ rb_shell_player_class_init (RBShellPlayerClass *klass)
 							      GTK_TYPE_UI_MANAGER,
 							      G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
 
+	/**
+	 * RBShellPlayer:db:
+	 *
+	 * The #RhythmDB
+	 */
 	g_object_class_install_property (object_class,
 					 PROP_DB,
 					 g_param_spec_object ("db",
@@ -375,6 +393,11 @@ rb_shell_player_class_init (RBShellPlayerClass *klass)
 							      RHYTHMDB_TYPE,
 							      G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
 
+	/**
+	 * RBShellPlayer:action-group:
+	 *
+	 * The #GtkActionGroup to use for player actions
+	 */
 	g_object_class_install_property (object_class,
 					 PROP_ACTION_GROUP,
 					 g_param_spec_object ("action-group",
@@ -383,14 +406,24 @@ rb_shell_player_class_init (RBShellPlayerClass *klass)
 							      GTK_TYPE_ACTION_GROUP,
 							      G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
 
+	/**
+	 * RBShellPlayer:queue-source:
+	 *
+	 * The play queue source
+	 */
 	g_object_class_install_property (object_class,
 					 PROP_QUEUE_SOURCE,
 					 g_param_spec_object ("queue-source",
-						 	      "RBPlaylistSource",
-							      "RBPlaylistSource object",
+							      "RBPlayQueueSource",
+							      "RBPlayQueueSource object",
 							      RB_TYPE_PLAYLIST_SOURCE,
 							      G_PARAM_READWRITE));
 
+	/**
+	 * RBShellPlayer:queue-only:
+	 *
+	 * If %TRUE, activating an entry should only add it to the play queue.
+	 */
 	g_object_class_install_property (object_class,
 					 PROP_QUEUE_ONLY,
 					 g_param_spec_boolean ("queue-only",
@@ -399,6 +432,11 @@ rb_shell_player_class_init (RBShellPlayerClass *klass)
 							       FALSE,
 							       G_PARAM_READWRITE));
 
+	/**
+	 * RBShellPlayer:playing-from-queue:
+	 *
+	 * If %TRUE, the current playing entry came from the play queue.
+	 */
 	g_object_class_install_property (object_class,
 					 PROP_PLAYING_FROM_QUEUE,
 					 g_param_spec_boolean ("playing-from-queue",
@@ -407,6 +445,11 @@ rb_shell_player_class_init (RBShellPlayerClass *klass)
 							       FALSE,
 							       G_PARAM_READABLE));
 
+	/**
+	 * RBShellPlayer:player:
+	 *
+	 * The player backend object (an object implementing the #RBPlayer interface).
+	 */
 	g_object_class_install_property (object_class,
 					 PROP_PLAYER,
 					 g_param_spec_object ("player",
@@ -415,6 +458,11 @@ rb_shell_player_class_init (RBShellPlayerClass *klass)
 							      G_TYPE_OBJECT,
 							      G_PARAM_READABLE));
 
+	/**
+	 * RBShellPlayer:play-order:
+	 *
+	 * The current play order object.
+	 */
 	g_object_class_install_property (object_class,
 					 PROP_PLAY_ORDER,
 					 g_param_spec_string ("play-order",
@@ -422,6 +470,11 @@ rb_shell_player_class_init (RBShellPlayerClass *klass)
 							      "What play order to use",
 							      "linear",
 							      G_PARAM_READABLE));
+	/**
+	 * RBShellPlayer:playing:
+	 *
+	 * Whether Rhythmbox is currently playing something
+	 */
 	g_object_class_install_property (object_class,
 					 PROP_PLAYING,
 					 g_param_spec_boolean ("playing",
@@ -429,7 +482,11 @@ rb_shell_player_class_init (RBShellPlayerClass *klass)
 							      "Whether Rhythmbox is currently playing",
 							       FALSE,
 							       G_PARAM_READABLE));
-
+	/**
+	 * RBShellPlayer:volume:
+	 *
+	 * The current playback volume (between 0.0 and 1.0)
+	 */
 	g_object_class_install_property (object_class,
 					 PROP_VOLUME,
 					 g_param_spec_float ("volume",
@@ -438,6 +495,11 @@ rb_shell_player_class_init (RBShellPlayerClass *klass)
 							     0.0f, 1.0f, 1.0f,
 							     G_PARAM_READWRITE));
 
+	/**
+	 * RBShellPlayer:statusbar:
+	 *
+	 * The #RBStatusbar object
+	 */
 	g_object_class_install_property (object_class,
 					 PROP_STATUSBAR,
 					 g_param_spec_object ("statusbar",
@@ -576,28 +638,6 @@ rb_shell_player_class_init (RBShellPlayerClass *klass)
 			      4,
 			      G_TYPE_STRING, G_TYPE_STRING,
 			      G_TYPE_VALUE, G_TYPE_VALUE);
-
-	/**
-	 * RBShellPlayer::missing-plugins:
-	 * @player: the #RBShellPlayer
-	 * @details: the list of plugin detail strings describing the missing plugins
-	 * @descriptions: the list of descriptions for the missing plugins
-	 * @closure: a #GClosure to be called when the plugin installation is complete
-	 *
-	 * Emitted when the player backend requires some plugins to be installed in
-	 * order to play the current playing song.  When the closure included in the
-	 * signal args is called, playback will be attempted again.
-	 */
-	rb_shell_player_signals[MISSING_PLUGINS] =
-		g_signal_new ("missing-plugins",
-			      G_OBJECT_CLASS_TYPE (object_class),
-			      G_SIGNAL_RUN_LAST,
-			      0,	/* no need for an internal handler */
-			      NULL, NULL,
-			      rb_marshal_BOOLEAN__POINTER_POINTER_POINTER,
-			      G_TYPE_BOOLEAN,
-			      3,
-			      G_TYPE_STRV, G_TYPE_STRV, G_TYPE_CLOSURE);
 
 	/**
 	 * RBShellPlayer::elapsed-nano-changed:
@@ -900,6 +940,31 @@ rb_shell_player_handle_eos (RBPlayer *player,
 	GDK_THREADS_LEAVE ();
 }
 
+
+static void
+rb_shell_player_handle_redirect (RBPlayer *player,
+				 RhythmDBEntry *entry,
+				 const gchar *uri,
+				 RBShellPlayer *shell_player)
+{
+	GValue val = { 0 };
+
+	rb_debug ("redirect to %s", uri);
+
+	/* Stop existing stream */
+	rb_player_close (shell_player->priv->mmplayer, NULL, NULL);
+
+	/* Update entry */
+	g_value_init (&val, G_TYPE_STRING);
+	g_value_set_string (&val, uri);
+	rhythmdb_entry_set (shell_player->priv->db, entry, RHYTHMDB_PROP_LOCATION, &val);
+	g_value_unset (&val);
+	rhythmdb_commit (shell_player->priv->db);
+
+	/* Play new URI */
+	rb_shell_player_open_location (shell_player, entry, RB_PLAYER_PLAY_REPLACE, NULL);
+}
+
 static void
 rb_shell_player_init (RBShellPlayer *player)
 {
@@ -945,6 +1010,11 @@ rb_shell_player_init (RBShellPlayer *player)
 	g_signal_connect_object (player->priv->mmplayer,
 				 "eos",
 				 G_CALLBACK (rb_shell_player_handle_eos),
+				 player, 0);
+
+	g_signal_connect_object (player->priv->mmplayer,
+				 "redirect",
+				 G_CALLBACK (rb_shell_player_handle_redirect),
 				 player, 0);
 
 	g_signal_connect_object (player->priv->mmplayer,
@@ -1445,16 +1515,21 @@ typedef struct {
 	char *location;
 	RhythmDBEntry *entry;
 	RBPlayerPlayType play_type;
+	GCancellable *cancellable;
 } OpenLocationThreadData;
 
 static void
 playlist_entry_cb (TotemPlParser *playlist,
 		   const char *uri,
 		   GHashTable *metadata,
-		   RBShellPlayer *player)
+		   OpenLocationThreadData *data)
 {
-	rb_debug ("adding stream url %s", uri);
-	g_queue_push_tail (player->priv->playlist_urls, g_strdup (uri));
+	if (g_cancellable_is_cancelled (data->cancellable)) {
+		rb_debug ("playlist parser cancelled");
+	} else {
+		rb_debug ("adding stream url %s (%p)", uri, playlist);
+		g_queue_push_tail (data->player->priv->playlist_urls, g_strdup (uri));
+	}
 }
 
 static gpointer
@@ -1465,9 +1540,9 @@ open_location_thread (OpenLocationThreadData *data)
 
 	playlist = totem_pl_parser_new ();
 
-	g_signal_connect_data (G_OBJECT (playlist), "entry-parsed",
+	g_signal_connect_data (playlist, "entry-parsed",
 			       G_CALLBACK (playlist_entry_cb),
-			       data->player, NULL, 0);
+			       data, NULL, 0);
 
 	totem_pl_parser_add_ignored_mimetype (playlist, "x-directory/normal");
 	totem_pl_parser_add_ignored_mimetype (playlist, "inode/directory");
@@ -1475,7 +1550,12 @@ open_location_thread (OpenLocationThreadData *data)
 	playlist_result = totem_pl_parser_parse (playlist, data->location, FALSE);
 	g_object_unref (playlist);
 
-	if (playlist_result == TOTEM_PL_PARSER_RESULT_SUCCESS) {
+	if (g_cancellable_is_cancelled (data->cancellable)) {
+		playlist_result = TOTEM_PL_PARSER_RESULT_CANCELLED;
+	}
+
+	switch (playlist_result) {
+	case TOTEM_PL_PARSER_RESULT_SUCCESS:
 		if (g_queue_is_empty (data->player->priv->playlist_urls)) {
 			GError *error = g_error_new (RB_SHELL_PLAYER_ERROR,
 						     RB_SHELL_PLAYER_ERROR_END_OF_PLAYLIST,
@@ -1488,16 +1568,24 @@ open_location_thread (OpenLocationThreadData *data)
 			char *location;
 
 			location = g_queue_pop_head (data->player->priv->playlist_urls);
-			rb_debug ("playing first stream url %s", data->location);
+			rb_debug ("playing first stream url %s", location);
 			rb_shell_player_open_playlist_url (data->player, location, data->entry, data->play_type);
 			g_free (location);
 		}
-	} else {
+		break;
+
+	case TOTEM_PL_PARSER_RESULT_CANCELLED:
+		rb_debug ("playlist parser was cancelled");
+		break;
+
+	default:
 		/* if we can't parse it as a playlist, just try playing it */
 		rb_debug ("playlist parser failed, playing %s directly", data->location);
 		rb_shell_player_open_playlist_url (data->player, data->location, data->entry, data->play_type);
+		break;
 	}
 
+	g_object_unref (data->cancellable);
 	g_free (data);
 	return NULL;
 }
@@ -1509,7 +1597,6 @@ rb_shell_player_open_location (RBShellPlayer *player,
 			       GError **error)
 {
 	char *location;
-	gboolean was_playing;
 	gboolean ret = TRUE;
 
 	/* dispose of any existing playlist urls */
@@ -1529,8 +1616,6 @@ rb_shell_player_open_location (RBShellPlayer *player,
 		return FALSE;
 	}
 
-	was_playing = rb_player_playing (player->priv->mmplayer);
-
 	if (rb_source_try_playlist (player->priv->source)) {
 		OpenLocationThreadData *data;
 
@@ -1544,6 +1629,11 @@ rb_shell_player_open_location (RBShellPlayer *player,
 			data->location = g_strdup (location);
 		else
 			data->location = g_strconcat ("http://", location, NULL);
+
+		if (player->priv->parser_cancellable == NULL) {
+			player->priv->parser_cancellable = g_cancellable_new ();
+		}
+		data->cancellable = g_object_ref (player->priv->parser_cancellable);
 
 		g_thread_create ((GThreadFunc)open_location_thread, data, FALSE, NULL);
 	} else {
@@ -1575,11 +1665,20 @@ rb_shell_player_play (RBShellPlayer *player,
 
 	if (player->priv->current_playing_source == NULL) {
 		rb_debug ("current playing source is NULL");
+		g_set_error (error,
+			     RB_SHELL_PLAYER_ERROR,
+			     RB_SHELL_PLAYER_ERROR_NOT_PLAYING,
+			     "Current playing source is NULL");
 		return FALSE;
 	}
 
 	if (rb_player_playing (player->priv->mmplayer))
 		return TRUE;
+
+	if (player->priv->parser_cancellable != NULL) {
+		rb_debug ("currently parsing a playlist");
+		return TRUE;
+	}
 
 	/* we're obviously not playing anything, so crossfading is irrelevant */
 	if (!rb_player_play (player->priv->mmplayer, RB_PLAYER_PLAY_REPLACE, 0.0f, error)) {
@@ -1611,16 +1710,6 @@ rb_shell_player_set_entry_playback_error (RBShellPlayer *player,
 			    &value);
 	g_value_unset (&value);
 	rhythmdb_commit (player->priv->db);
-}
-
-static gboolean
-do_next_idle (RBShellPlayer *player)
-{
-	/* use the EOS callback, so that EOF_SOURCE_ conditions are handled properly */
-	rb_shell_player_handle_eos (NULL, NULL, FALSE, player);
-	player->priv->do_next_idle_id = 0;
-
-	return FALSE;
 }
 
 static gboolean
@@ -1670,13 +1759,12 @@ rb_shell_player_set_playing_entry (RBShellPlayer *player,
 		goto lose;
 	}
 
-	rb_shell_player_sync_replaygain (player, entry);
-
 	rb_debug ("Success!");
 	/* clear error on successful playback */
 	g_value_init (&val, G_TYPE_STRING);
 	g_value_set_string (&val, NULL);
 	rhythmdb_entry_set (player->priv->db, entry, RHYTHMDB_PROP_PLAYBACK_ERROR, &val);
+	rhythmdb_commit (player->priv->db);
 	g_value_unset (&val);
 
 	return TRUE;
@@ -1749,8 +1837,12 @@ rb_shell_player_get_playback_state (RBShellPlayer *player,
 	return FALSE;
 
 found:
-	*shuffle = i > 0;
-	*repeat = j > 0;
+	if (shuffle != NULL) {
+		*shuffle = i > 0;
+	}
+	if (repeat != NULL) {
+		*repeat = j > 0;
+	}
 	g_free (play_order);
 	return TRUE;
 }
@@ -2430,7 +2522,6 @@ rb_shell_player_sync_volume (RBShellPlayer *player,
 
 
 	entry = rb_shell_player_get_playing_entry (player);
-	rb_shell_player_sync_replaygain (player, entry);
 	if (entry != NULL) {
 		rhythmdb_entry_unref (entry);
 	}
@@ -2450,29 +2541,6 @@ rb_shell_player_toggle_mute (RBShellPlayer *player)
 {
 	player->priv->mute = !player->priv->mute;
 	rb_shell_player_sync_volume (player, FALSE, TRUE);
-}
-
-static void
-rb_shell_player_sync_replaygain (RBShellPlayer *player,
-				 RhythmDBEntry *entry)
-{
-	double entry_track_gain = 0;
-	double entry_track_peak = 0;
-	double entry_album_gain = 0;
-	double entry_album_peak = 0;
-
-	if (entry != NULL) {
-             	entry_track_gain = rhythmdb_entry_get_double (entry, RHYTHMDB_PROP_TRACK_GAIN);
-             	entry_track_peak = rhythmdb_entry_get_double (entry, RHYTHMDB_PROP_TRACK_PEAK);
-             	entry_album_gain = rhythmdb_entry_get_double (entry, RHYTHMDB_PROP_ALBUM_GAIN);
-             	entry_album_peak = rhythmdb_entry_get_double (entry, RHYTHMDB_PROP_ALBUM_PEAK);
-	}
-
-	if (eel_gconf_get_boolean (CONF_USE_REPLAYGAIN)) {
-		rb_player_set_replaygain (player->priv->mmplayer, NULL,
-					  entry_track_gain, entry_track_peak,
-					  entry_album_gain, entry_album_peak);
-	}
 }
 
 /**
@@ -2522,6 +2590,8 @@ rb_shell_player_set_volume_relative (RBShellPlayer *player,
  * @volume: returns the volume level
  * @error: returns error information
  *
+ * Returns the current volume level
+ *
  * Return value: the current volume level.
  */
 gboolean
@@ -2567,6 +2637,8 @@ rb_shell_player_set_mute (RBShellPlayer *player,
  * @player: the #RBShellPlayer
  * @mute: returns the current mute setting
  * @error: returns error information
+ *
+ * Returns %TRUE if currently muted
  *
  * Return value: %TRUE if currently muted
  */
@@ -2772,13 +2844,13 @@ rb_shell_player_property_row_activated_cb (RBPropertyView *view,
 static void
 rb_shell_player_entry_changed_cb (RhythmDB *db,
 				  RhythmDBEntry *entry,
-				  GSList *changes,
+				  GValueArray *changes,
 				  RBShellPlayer *player)
 {
-	GSList *t;
 	gboolean synced = FALSE;
 	const char *location;
 	RhythmDBEntry *playing_entry;
+	int i;
 
 	playing_entry = rb_shell_player_get_playing_entry (player);
 
@@ -2791,8 +2863,9 @@ rb_shell_player_entry_changed_cb (RhythmDB *db,
 	}
 
 	location = rhythmdb_entry_get_string (entry, RHYTHMDB_PROP_LOCATION);
-	for (t = changes; t; t = t->next) {
-		RhythmDBEntryChange *change = t->data;
+	for (i = 0; i < changes->n_values; i++) {
+		GValue *v = g_value_array_get_nth (changes, i);
+		RhythmDBEntryChange *change = g_value_get_boxed (v);
 
 		/* update UI if the artist, title or album has changed */
 		switch (change->prop) {
@@ -2855,6 +2928,11 @@ rb_shell_player_extra_metadata_cb (RhythmDB *db,
 	/* emit dbus signals for changes with easily marshallable types */
 	switch (G_VALUE_TYPE (metadata)) {
 	case G_TYPE_STRING:
+		/* make sure it's valid utf8, otherwise dbus barfs */
+		if (g_utf8_validate (g_value_get_string (metadata), -1, NULL) == FALSE) {
+			rb_debug ("not emitting extra metadata field %s as value is not valid utf8", field);
+			return;
+		}
 	case G_TYPE_BOOLEAN:
 	case G_TYPE_ULONG:
 	case G_TYPE_UINT64:
@@ -3138,6 +3216,13 @@ rb_shell_player_stop (RBShellPlayer *player)
 		g_error_free (error);
 	}
 
+	if (player->priv->parser_cancellable != NULL) {
+		rb_debug ("cancelling playlist parser");
+		g_cancellable_cancel (player->priv->parser_cancellable);
+		g_object_unref (player->priv->parser_cancellable);
+		player->priv->parser_cancellable = NULL;
+	}
+
 	if (player->priv->playing_entry != NULL) {
 		rhythmdb_entry_unref (player->priv->playing_entry);
 		player->priv->playing_entry = NULL;
@@ -3284,20 +3369,33 @@ rb_shell_player_set_playing_time (RBShellPlayer *player,
  * rb_shell_player_seek:
  * @player: the #RBShellPlayer
  * @offset: relative seek target (in seconds)
+ * @error: returns error information
  *
- * Seeks forwards or backwards in the current playing song.
- * Does not return error information.
+ * Seeks forwards or backwards in the current playing
+ * song. Fails if the current song is not seekable.
+ *
+ * Return value: %TRUE if successful
  */
-void
-rb_shell_player_seek (RBShellPlayer *player, long offset)
+gboolean
+rb_shell_player_seek (RBShellPlayer *player,
+		      gint32 offset,
+		      GError **error)
 {
-	g_return_if_fail (RB_IS_SHELL_PLAYER (player));
+	g_return_val_if_fail (RB_IS_SHELL_PLAYER (player), FALSE);
 
 	if (rb_player_seekable (player->priv->mmplayer)) {
-		gint64 t = rb_player_get_time (player->priv->mmplayer);
-		if (t < 0)
-			t = 0;
-		rb_player_set_time (player->priv->mmplayer, t + (offset * RB_PLAYER_SECOND));
+		gint64 target_time = rb_player_get_time (player->priv->mmplayer) +
+			(((gint64)offset) * RB_PLAYER_SECOND);
+		if (target_time < 0)
+			target_time = 0;
+		rb_player_set_time (player->priv->mmplayer, target_time);
+		return TRUE;
+	} else {
+		g_set_error (error,
+			     RB_SHELL_PLAYER_ERROR,
+			     RB_SHELL_PLAYER_ERROR_NOT_SEEKABLE,
+			     _("Current song is not seekable"));
+		return FALSE;
 	}
 }
 
@@ -3342,6 +3440,33 @@ rb_shell_player_sync_with_selected_source (RBShellPlayer *player)
 	}
 }
 
+static gboolean
+do_next_idle (RBShellPlayer *player)
+{
+	/* use the EOS callback, so that EOF_SOURCE_ conditions are handled properly */
+	rb_shell_player_handle_eos (NULL, NULL, FALSE, player);
+	player->priv->do_next_idle_id = 0;
+
+	return FALSE;
+}
+
+static gboolean
+do_next_not_found_idle (RBShellPlayer *player)
+{
+	RhythmDBEntry *entry;
+	entry = rb_shell_player_get_playing_entry (player);
+
+	do_next_idle (player);
+
+	if (entry != NULL) {
+		rhythmdb_entry_update_availability (entry, RHYTHMDB_ENTRY_AVAIL_NOT_FOUND);
+		rhythmdb_commit (player->priv->db);
+		rhythmdb_entry_unref (entry);
+	}
+
+	return FALSE;
+}
+
 static void
 rb_shell_player_error (RBShellPlayer *player,
 		       gboolean async,
@@ -3361,7 +3486,17 @@ rb_shell_player_error (RBShellPlayer *player,
 	if (entry && async)
 		rb_shell_player_set_entry_playback_error (player, entry, err->message);
 
-	if (err->code == RB_PLAYER_ERROR_NO_AUDIO) {
+	if (entry == NULL) {
+		do_next = TRUE;
+	} else if (err->domain == RB_PLAYER_ERROR && err->code == RB_PLAYER_ERROR_NOT_FOUND) {
+		/* process not found errors after we've started the next track */
+		if (player->priv->do_next_idle_id != 0) {
+			g_source_remove (player->priv->do_next_idle_id);
+		}
+		player->priv->do_next_idle_id = g_idle_add ((GSourceFunc)do_next_not_found_idle, player);
+		do_next = FALSE;
+	} else if (err->domain == RB_PLAYER_ERROR && err->code == RB_PLAYER_ERROR_NO_AUDIO) {
+
 		/* stream has completely ended */
 		rb_shell_player_stop (player);
 		do_next = FALSE;
@@ -3607,10 +3742,7 @@ missing_plugins_cb (RBPlayer *player,
 				retry_data,
 				(GClosureNotify) missing_plugins_retry_cleanup);
 	g_closure_set_marshal (retry, g_cclosure_marshal_VOID__BOOLEAN);
-	g_signal_emit (sp,
-		       rb_shell_player_signals[MISSING_PLUGINS], 0,
-		       details, descriptions, retry,
-		       &processing);
+	processing = rb_missing_plugins_install (details, FALSE, retry);
 	if (processing) {
 		/* don't handle any further errors */
 		sp->priv->handling_error = TRUE;
@@ -3753,11 +3885,11 @@ rb_shell_player_error_get_type (void)
 
 	if (etype == 0)	{
 		static const GEnumValue values[] = {
-			ENUM_ENTRY (RB_SHELL_PLAYER_ERROR_PLAYLIST_PARSE_ERROR, "Playing parsing error"),
-			ENUM_ENTRY (RB_SHELL_PLAYER_ERROR_END_OF_PLAYLIST, "End of playlist reached"),
-			ENUM_ENTRY (RB_SHELL_PLAYER_ERROR_NOT_PLAYING, "Not playing"),
-			ENUM_ENTRY (RB_SHELL_PLAYER_ERROR_NOT_SEEKABLE, "Not seekable"),
-			ENUM_ENTRY (RB_SHELL_PLAYER_ERROR_POSITION_NOT_AVAILABLE, "Playback position not available"),
+			ENUM_ENTRY (RB_SHELL_PLAYER_ERROR_PLAYLIST_PARSE_ERROR, "playlist-parse-failed"),
+			ENUM_ENTRY (RB_SHELL_PLAYER_ERROR_END_OF_PLAYLIST, "end-of-playlist"),
+			ENUM_ENTRY (RB_SHELL_PLAYER_ERROR_NOT_PLAYING, "not-playing"),
+			ENUM_ENTRY (RB_SHELL_PLAYER_ERROR_NOT_SEEKABLE, "not-seekable"),
+			ENUM_ENTRY (RB_SHELL_PLAYER_ERROR_POSITION_NOT_AVAILABLE, "position-not-available"),
 			{ 0, 0, 0 }
 		};
 

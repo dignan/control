@@ -30,11 +30,10 @@
 
 #include <gio/gio.h>
 
-#include "rb-source.h"
-#include "rhythmdb.h"
-#include "rb-shell.h"
+#include <sources/rb-source.h>
+#include <shell/rb-shell.h>
 
-#include "mediaplayerid.h"
+#include <lib/libmediaplayerid/mediaplayerid.h>
 
 G_BEGIN_DECLS
 
@@ -44,12 +43,6 @@ G_BEGIN_DECLS
 #define RB_IS_REMOVABLE_MEDIA_MANAGER(o)        (G_TYPE_CHECK_INSTANCE_TYPE ((o), RB_TYPE_REMOVABLE_MEDIA_MANAGER))
 #define RB_IS_REMOVABLE_MEDIA_MANAGER_CLASS(k)  (G_TYPE_CHECK_CLASS_TYPE ((k), RB_TYPE_REMOVABLE_MEDIA_MANAGER))
 #define RB_REMOVABLE_MEDIA_MANAGER_GET_CLASS(o) (G_TYPE_INSTANCE_GET_CLASS ((o), RB_TYPE_REMOVABLE_MEDIA_MANAGER, RBRemovableMediaManagerClass))
-
-typedef void (*RBTransferCompleteCallback) (RhythmDBEntry *entry,
-					    const char *dest,
-					    guint64 dest_size,
-					    GError *error,
-					    gpointer userdata);
 
 typedef struct _RBRemovableMediaManager RBRemovableMediaManager;
 typedef struct _RBRemovableMediaManagerClass RBRemovableMediaManagerClass;
@@ -66,11 +59,6 @@ struct _RBRemovableMediaManagerClass
 	/* signals */
 	void	(*medium_added)		(RBRemovableMediaManager *mgr,
 					 RBSource *source);
-	void	(*transfer_progress)	(RBRemovableMediaManager *mgr,
-					 gint done,
-					 gint total,
-					 double fraction);
-
 	RBSource * (*create_source_device) (RBRemovableMediaManager *mgr,
 					 GObject *device);		/* actually a GUdevDevice */
 	RBSource * (*create_source_mount) (RBRemovableMediaManager *mgr,
@@ -84,13 +72,6 @@ RBRemovableMediaManager* rb_removable_media_manager_new		(RBShell *shell);
 GType			rb_removable_media_manager_get_type	(void);
 
 void			rb_removable_media_manager_scan (RBRemovableMediaManager *manager);
-
-void	rb_removable_media_manager_queue_transfer (RBRemovableMediaManager *mgr,
-						   RhythmDBEntry *entry,
-						   const char *dest,
-						   GList *mime_types,
-						   RBTransferCompleteCallback callback,
-						   gpointer userdata);
 
 G_END_DECLS
 

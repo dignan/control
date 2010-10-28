@@ -32,6 +32,11 @@
 #include <glib/gi18n.h>
 #include <gst/gst.h>
 
+#if defined(HAVE_GUDEV)
+#define G_UDEV_API_IS_SUBJECT_TO_CHANGE
+#include <gudev/gudev.h>
+#endif
+
 #include "rhythmdb.h"
 #include "eel-gconf-extensions.h"
 #include "rb-debug.h"
@@ -47,9 +52,15 @@
 #include "rb-shell-player.h"
 #include "rb-player.h"
 #include "rb-encoder.h"
+#include "rb-sync-settings.h"
 
 #include "rb-mtp-source.h"
 #include "rb-mtp-thread.h"
+
+#if !GLIB_CHECK_VERSION(2,22,0)
+#define g_mount_unmount_with_operation_finish g_mount_unmount_finish
+#define g_mount_unmount_with_operation(m,f,mo,ca,cb,ud) g_mount_unmount(m,f,ca,cb,ud)
+#endif
 
 #define CONF_STATE_PANED_POSITION CONF_PREFIX "/state/mtp/paned_position"
 #define CONF_STATE_SHOW_BROWSER   CONF_PREFIX "/state/mtp/show_browser"
@@ -87,6 +98,8 @@ static char* impl_build_dest_uri (RBRemovableMediaSource *source,
 				  RhythmDBEntry *entry,
 				  const char *mimetype,
 				  const char *extension);
+static void impl_eject (RBRemovableMediaSource *source);
+static gboolean impl_can_eject (RBRemovableMediaSource *source);
 
 static void mtp_device_open_cb (LIBMTP_mtpdevice_t *device, RBMtpSource *source);
 static void mtp_tracklist_cb (LIBMTP_track_t *tracks, RBMtpSource *source);
@@ -97,8 +110,14 @@ static void artwork_notify_cb (RhythmDB *db,
 			       const GValue *metadata,
 			       RBMtpSource *source);
 
+static void		impl_get_entries	(RBMediaPlayerSource *source, const char *category, GHashTable *map);
 static guint64		impl_get_capacity	(RBMediaPlayerSource *source);
 static guint64		impl_get_free_space	(RBMediaPlayerSource *source);
+static void		impl_delete_entries	(RBMediaPlayerSource *source,
+						 GList *entries,
+						 RBMediaPlayerSourceDeleteCallback callback,
+						 gpointer callback_data,
+						 GDestroyNotify destroy_data);
 static void		impl_show_properties	(RBMediaPlayerSource *source, GtkWidget *info_box, GtkWidget *notebook);
 
 static void prepare_player_source_cb (RBPlayer *player,
@@ -113,6 +132,9 @@ static void prepare_encoder_sink_cb (RBEncoderFactory *factory,
 				     const char *stream_uri,
 				     GObject *sink,
 				     RBMtpSource *source);
+#if defined(HAVE_GUDEV)
+static GMount *find_mount_for_device (GUdevDevice *device);
+#endif
 
 typedef struct
 {
@@ -121,7 +143,10 @@ typedef struct
 	GHashTable *entry_map;
 	GHashTable *artwork_request_map;
 	GHashTable *track_transfer_map;
-#if !defined(HAVE_GUDEV)
+#if defined(HAVE_GUDEV)
+	GUdevDevice *udev_device;
+	GVolume *remount_volume;
+#else
 	char *udi;
 #endif
 	uint16_t supported_types[LIBMTP_FILETYPE_UNKNOWN+1];
@@ -148,6 +173,7 @@ enum
 {
 	PROP_0,
 	PROP_RAW_DEVICE,
+	PROP_UDEV_DEVICE,
 	PROP_UDI,
 	PROP_DEVICE_SERIAL
 };
@@ -188,9 +214,13 @@ rb_mtp_source_class_init (RBMtpSourceClass *klass)
 	rms_class->impl_build_dest_uri = impl_build_dest_uri;
 	rms_class->impl_get_mime_types = impl_get_mime_types;
 	rms_class->impl_should_paste = rb_removable_media_source_should_paste_no_duplicate;
+	rms_class->impl_can_eject = impl_can_eject;
+	rms_class->impl_eject = impl_eject;
 
+	mps_class->impl_get_entries = impl_get_entries;
 	mps_class->impl_get_capacity = impl_get_capacity;
 	mps_class->impl_get_free_space = impl_get_free_space;
+	mps_class->impl_delete_entries = impl_delete_entries;
 	mps_class->impl_show_properties = impl_show_properties;
 
 	g_object_class_install_property (object_class,
@@ -199,7 +229,15 @@ rb_mtp_source_class_init (RBMtpSourceClass *klass)
 							       "raw-device",
 							       "libmtp raw device",
 							       G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
-#if !defined(HAVE_GUDEV)
+#if defined(HAVE_GUDEV)
+	g_object_class_install_property (object_class,
+					 PROP_UDEV_DEVICE,
+					 g_param_spec_object ("udev-device",
+							      "udev-device",
+							      "GUdev device object",
+							      G_UDEV_TYPE_DEVICE,
+							      G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
+#else
 	g_object_class_install_property (object_class,
 					 PROP_UDI,
 					 g_param_spec_string ("udi",
@@ -240,6 +278,52 @@ rb_mtp_source_init (RBMtpSource *source)
 	priv->track_transfer_map = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
 }
 
+
+static void
+open_device (RBMtpSource *source)
+{
+	RBMtpSourcePrivate *priv = MTP_SOURCE_GET_PRIVATE (source);
+
+	rb_debug ("actually opening device");
+	priv->device_thread = rb_mtp_thread_new ();
+	rb_mtp_thread_open_device (priv->device_thread,
+				   &priv->raw_device,
+				   (RBMtpOpenCallback)mtp_device_open_cb,
+				   g_object_ref (source),
+				   g_object_unref);
+}
+
+#if defined(HAVE_GUDEV)
+static void
+unmount_done_cb (GObject *object, GAsyncResult *result, gpointer psource)
+{
+	GMount *mount;
+	RBMtpSource *source;
+	gboolean ok;
+	GError *error = NULL;
+	RBMtpSourcePrivate *priv;
+
+	mount = G_MOUNT (object);
+	source = RB_MTP_SOURCE (psource);
+	priv = MTP_SOURCE_GET_PRIVATE (source);
+
+	ok = g_mount_unmount_with_operation_finish (mount, result, &error);
+	if (ok) {
+		rb_debug ("successfully unmounted mtp device");
+		priv->remount_volume = g_mount_get_volume (mount);
+
+		open_device (source);
+	} else {
+		g_warning ("Unable to unmount MTP device: %s", error->message);
+		g_error_free (error);
+	}
+
+	g_object_unref (mount);
+	g_object_unref (source);
+}
+
+#endif
+
 static void
 rb_mtp_source_constructed (GObject *object)
 {
@@ -251,19 +335,30 @@ rb_mtp_source_constructed (GObject *object)
 	GObject *player_backend;
 	GtkIconTheme *theme;
 	GdkPixbuf *pixbuf;
+#if defined(HAVE_GUDEV)
+	GMount *mount;
+#endif
 	gint size;
 
 	RB_CHAIN_GOBJECT_METHOD (rb_mtp_source_parent_class, constructed, object);
 	source = RB_MTP_SOURCE (object);
 	priv = MTP_SOURCE_GET_PRIVATE (source);
 
-	/* start the device thread */
-	priv->device_thread = rb_mtp_thread_new ();
-	rb_mtp_thread_open_device (priv->device_thread,
-				   &priv->raw_device,
-				   (RBMtpOpenCallback)mtp_device_open_cb,
-				   g_object_ref (source),
-				   g_object_unref);
+	/* try to open the device.  if gvfs has mounted it, unmount it first */
+#if defined(HAVE_GUDEV)
+	mount = find_mount_for_device (priv->udev_device);
+	if (mount != NULL) {
+		rb_debug ("device is already mounted, waiting until activated");
+		g_mount_unmount_with_operation (mount,
+						G_MOUNT_UNMOUNT_NONE,
+						NULL,
+						NULL,
+						unmount_done_cb,
+						g_object_ref (source));
+		/* mount gets unreffed in callback */
+	} else
+#endif
+	open_device (source);
 
 	tracks = rb_source_get_entry_view (RB_SOURCE (source));
 	rb_entry_view_append_column (tracks, RB_ENTRY_VIEW_COL_RATING, FALSE);
@@ -323,7 +418,11 @@ rb_mtp_source_set_property (GObject *object,
 		raw_device = g_value_get_pointer (value);
 		priv->raw_device = *raw_device;
 		break;
-#if !defined(HAVE_GUDEV)
+#if defined(HAVE_GUDEV)
+	case PROP_UDEV_DEVICE:
+		priv->udev_device = g_value_dup_object (value);
+		break;
+#else
 	case PROP_UDI:
 		priv->udi = g_value_dup_string (value);
 		break;
@@ -346,7 +445,11 @@ rb_mtp_source_get_property (GObject *object,
 	case PROP_RAW_DEVICE:
 		g_value_set_pointer (value, &priv->raw_device);
 		break;
-#if !defined(HAVE_GUDEV)
+#if defined(HAVE_GUDEV)
+	case PROP_UDEV_DEVICE:
+		g_value_set_object (value, priv->udev_device);
+		break;
+#else
 	case PROP_UDI:
 		g_value_set_string (value, priv->udi);
 		break;
@@ -360,12 +463,30 @@ rb_mtp_source_get_property (GObject *object,
 	}
 }
 
+#if defined(HAVE_GUDEV)
+static void
+remount_done_cb (GObject *object, GAsyncResult *result, gpointer no)
+{
+	gboolean ok;
+	GError *error = NULL;
+
+	ok = g_volume_mount_finish (G_VOLUME (object), result, &error);
+	if (ok) {
+		rb_debug ("volume remounted successfully");
+	} else {
+		g_warning ("Unable to remount MTP device: %s", error->message);
+		g_error_free (error);
+	}
+	g_object_unref (object);
+}
+#endif
+
 static void
 rb_mtp_source_dispose (GObject *object)
 {
 	RBMtpSource *source = RB_MTP_SOURCE (object);
 	RBMtpSourcePrivate *priv = MTP_SOURCE_GET_PRIVATE (source);
-	RhythmDBEntryType entry_type;
+	RhythmDBEntryType *entry_type;
 	RhythmDB *db;
 
 	if (priv->device_thread != NULL) {
@@ -373,11 +494,25 @@ rb_mtp_source_dispose (GObject *object)
 		priv->device_thread = NULL;
 	}
 
+#if defined(HAVE_GUDEV)
+	if (priv->remount_volume != NULL) {
+		rb_debug ("remounting gvfs volume for mtp device");
+		/* the callback will unref remount_volume */
+		g_volume_mount (priv->remount_volume,
+				G_MOUNT_MOUNT_NONE,
+				NULL,
+				NULL,
+				remount_done_cb,
+				NULL);
+		priv->remount_volume = NULL;
+	}
+#endif
+
 	db = get_db_for_source (source);
 
 	g_object_get (G_OBJECT (source), "entry-type", &entry_type, NULL);
 	rhythmdb_entry_delete_by_type (db, entry_type);
-	g_boxed_free (RHYTHMDB_TYPE_ENTRY_TYPE, entry_type);
+	g_object_unref (entry_type);
 
 	rhythmdb_commit (db);
 	g_object_unref (db);
@@ -394,7 +529,11 @@ rb_mtp_source_finalize (GObject *object)
 	g_hash_table_destroy (priv->artwork_request_map);
 	g_hash_table_destroy (priv->track_transfer_map);		/* probably need to destroy the tracks too.. */
 
-#if !defined(HAVE_GUDEV)
+#if defined(HAVE_GUDEV)
+	if (priv->udev_device) {
+		g_object_unref (G_OBJECT (priv->udev_device));
+	}
+#else
 	g_free (priv->udi);
 #endif
 	g_free (priv->manufacturer);
@@ -420,23 +559,27 @@ impl_get_paned_key (RBBrowserSource *source)
 RBSource *
 rb_mtp_source_new (RBShell *shell,
 		   RBPlugin *plugin,
-#if !defined(HAVE_GUDEV)
+#if defined(HAVE_GUDEV)
+		   GUdevDevice *udev_device,
+#else
 		   const char *udi,
 #endif
 		   LIBMTP_raw_device_t *device)
 {
 	RBMtpSource *source = NULL;
-	RhythmDBEntryType entry_type;
+	RhythmDBEntryType *entry_type;
 	RhythmDB *db = NULL;
 	char *name = NULL;
 
 	g_object_get (shell, "db", &db, NULL);
 	name = g_strdup_printf ("MTP-%u-%d", device->bus_location, device->devnum);
 
-	entry_type = rhythmdb_entry_register_type (db, name);
-	entry_type->save_to_disk = FALSE;
-	entry_type->category = RHYTHMDB_ENTRY_NORMAL;
-
+	entry_type = g_object_new (RHYTHMDB_TYPE_ENTRY_TYPE,
+				   "db", db,
+				   "name", name,
+				   "save-to-disk", FALSE,
+				   "category", RHYTHMDB_ENTRY_NORMAL,
+				   NULL);
 	g_free (name);
 	g_object_unref (db);
 
@@ -448,7 +591,9 @@ rb_mtp_source_new (RBShell *shell,
 					      "volume", NULL,
 					      "source-group", RB_SOURCE_GROUP_DEVICES,
 					      "raw-device", device,
-#if !defined(HAVE_GUDEV)
+#if defined(HAVE_GUDEV)
+					      "udev-device", udev_device,
+#else
 					      "udi", udi,
 #endif
 					      NULL));
@@ -509,7 +654,7 @@ add_mtp_track_to_db (RBMtpSource *source,
 		     LIBMTP_track_t *track)
 {
 	RhythmDBEntry *entry = NULL;
-	RhythmDBEntryType entry_type;
+	RhythmDBEntryType *entry_type;
 	RBMtpSourcePrivate *priv = MTP_SOURCE_GET_PRIVATE (source);
 	char *name = NULL;
 
@@ -526,7 +671,7 @@ add_mtp_track_to_db (RBMtpSource *source,
 	name = g_strdup_printf ("xrbmtp://%i/%s", track->item_id, track->filename);
 	entry = rhythmdb_entry_new (RHYTHMDB (db), entry_type, name);
 	g_free (name);
-        g_boxed_free (RHYTHMDB_TYPE_ENTRY_TYPE, entry_type);
+        g_object_unref (entry_type);
 
 	if (entry == NULL) {
 		rb_debug ("cannot create entry %i", track->item_id);
@@ -587,6 +732,19 @@ add_mtp_track_to_db (RBMtpSource *source,
 					       &value);
 		g_value_unset (&value);
 	}
+	/* Set release date */
+	if (track->date != NULL && track->date[0] != '\0') {
+		GTimeVal tv;
+		if (g_time_val_from_iso8601 (track->date, &tv)) {
+			GDate d;
+			GValue value = {0, };
+			g_value_init (&value, G_TYPE_ULONG);
+			g_date_set_time_val (&d, &tv);
+			g_value_set_ulong (&value, g_date_get_julian (&d));
+			rhythmdb_entry_set (RHYTHMDB (db), entry, RHYTHMDB_PROP_DATE, &value);
+			g_value_unset (&value);
+		}
+	}
 
 	/* Set title */
 	entry_set_string_prop (RHYTHMDB (db), entry, RHYTHMDB_PROP_TITLE, track->title);
@@ -623,6 +781,8 @@ device_opened_idle (DeviceOpenedData *data)
 	/* when the source name changes after this, try to update the device name */
 	g_signal_connect (G_OBJECT (data->source), "notify::name",
 			  (GCallback)rb_mtp_source_name_changed_cb, NULL);
+
+	rb_media_player_source_load (RB_MEDIA_PLAYER_SOURCE (data->source));
 
 	for (i = 0; i < data->num_types; i++) {
 		const char *mediatype;
@@ -718,11 +878,23 @@ device_open_failed_idle (RBMtpSource *source)
 	return FALSE;
 }
 
+static gboolean
+device_open_ignore_idle (DeviceOpenedData *data)
+{
+	rb_source_delete_thyself (RB_SOURCE (data->source));
+	g_object_unref (data->source);
+	free (data->types);
+	g_free (data->name);
+	g_free (data);
+	return FALSE;
+}
+
 /* this callback runs on the device handling thread, so it can call libmtp directly */
 static void
 mtp_device_open_cb (LIBMTP_mtpdevice_t *device, RBMtpSource *source)
 {
 	RBMtpSourcePrivate *priv = MTP_SOURCE_GET_PRIVATE (source);
+	gboolean has_audio = FALSE;
 	DeviceOpenedData *data;
 
 	if (device == NULL) {
@@ -764,9 +936,26 @@ mtp_device_open_cb (LIBMTP_mtpdevice_t *device, RBMtpSource *source)
 
 	update_free_space_cb (device, RB_MTP_SOURCE (source));
 
-	/* figure out the set of formats supported by the device */
+	/* figure out the set of formats supported by the device, ensuring there's at least
+	 * one audio format aside from WAV.  the purpose of this is to exclude cameras and other
+	 * MTP devices that aren't interesting to us.
+	 */
 	if (LIBMTP_Get_Supported_Filetypes (device, &data->types, &data->num_types) != 0) {
 		rb_mtp_thread_report_errors (priv->device_thread, FALSE);
+	} else {
+		int i;
+		for (i = 0; i < data->num_types; i++) {
+			if (data->types[i] != LIBMTP_FILETYPE_WAV && LIBMTP_FILETYPE_IS_AUDIO (data->types[i])) {
+				has_audio = TRUE;
+				break;
+			}
+		}
+	}
+
+	if (has_audio == FALSE) {
+		rb_debug ("device doesn't support any audio formats");
+		g_idle_add ((GSourceFunc) device_open_ignore_idle, data);
+		return;
 	}
 
 	g_idle_add ((GSourceFunc) device_opened_idle, data);
@@ -792,7 +981,7 @@ mtp_tracklist_cb (LIBMTP_track_t *tracks, RBMtpSource *source)
 static char *
 gdate_to_char (GDate* date)
 {
-	return g_strdup_printf ("%04i%02i%02iT0000.0",
+	return g_strdup_printf ("%04i%02i%02iT000000.0",
 				g_date_get_year (date),
 				g_date_get_month (date),
 				g_date_get_day (date));
@@ -833,43 +1022,13 @@ mimetype_to_filetype (RBMtpSource *source, const char *mimetype)
 static void
 impl_delete (RBSource *source)
 {
-	RBMtpSourcePrivate *priv = MTP_SOURCE_GET_PRIVATE (source);
 	GList *sel;
-	GList *tem;
-	RBEntryView *tracks;
-	RhythmDB *db;
+	RBEntryView *songs;
 
-	db = get_db_for_source (RB_MTP_SOURCE (source));
-
-	tracks = rb_source_get_entry_view (source);
-	sel = rb_entry_view_get_selected_entries (tracks);
-	for (tem = sel; tem != NULL; tem = tem->next) {
-		LIBMTP_track_t *track;
-		RhythmDBEntry *entry;
-		const char *uri;
-		const char *album_name;
-
-		entry = (RhythmDBEntry *)tem->data;
-		uri = rhythmdb_entry_get_string (entry, RHYTHMDB_PROP_LOCATION);
-		track = g_hash_table_lookup (priv->entry_map, entry);
-		if (track == NULL) {
-			rb_debug ("Couldn't find track on mtp-device! (%s)", uri);
-			continue;
-		}
-
-		album_name = rhythmdb_entry_get_string (entry, RHYTHMDB_PROP_ALBUM);
-		if (strcmp (album_name, _("Unknown")) != 0) {
-			rb_mtp_thread_remove_from_album (priv->device_thread, track, album_name);
-		}
-		rb_mtp_thread_delete_track (priv->device_thread, track);
-
-		g_hash_table_remove (priv->entry_map, entry);
-		rhythmdb_entry_delete (db, entry);
-	}
-	rhythmdb_commit (db);
-
-	g_list_free (sel);
-	g_list_free (tem);
+	songs = rb_source_get_entry_view (source);
+	sel = rb_entry_view_get_selected_entries (songs);
+	impl_delete_entries (RB_MEDIA_PLAYER_SOURCE (source), sel, NULL, NULL, NULL);
+	rb_list_destroy_free (sel, (GDestroyNotify) rhythmdb_entry_unref);
 }
 
 static gboolean
@@ -884,7 +1043,8 @@ impl_get_ui_actions (RBSource *source)
 {
 	GList *actions = NULL;
 
-	actions = g_list_prepend (actions, g_strdup ("MTPSourceEject"));
+	actions = g_list_prepend (actions, g_strdup ("RemovableSourceEject"));
+	actions = g_list_prepend (actions, g_strdup ("MediaPlayerSourceSync"));
 
 	return actions;
 }
@@ -1005,6 +1165,13 @@ impl_track_add_error (RBRemovableMediaSource *source,
 }
 
 static void
+sanitize_for_mtp (char *str)
+{
+	rb_sanitize_path_for_msdos_filesystem (str);
+	g_strdelimit (str, "/", '_');
+}
+
+static void
 prepare_encoder_sink_cb (RBEncoderFactory *factory,
 			 const char *stream_uri,
 			 GObject *sink,
@@ -1019,6 +1186,7 @@ prepare_encoder_sink_cb (RBEncoderFactory *factory,
 	LIBMTP_filetype_t filetype;
 	gulong track_id;
 	GDate d;
+	char **folder_path;
 
 	/* make sure this stream is for a file on our device */
 	if (g_str_has_prefix (stream_uri, "xrbmtp://") == FALSE)
@@ -1034,8 +1202,10 @@ prepare_encoder_sink_cb (RBEncoderFactory *factory,
 	db = get_db_for_source (source);
 	entry = rhythmdb_entry_lookup_by_id (db, track_id);
 	g_object_unref (db);
-	if (entry == NULL)
+	if (entry == NULL) {
+		g_free (extension);
 		return;
+	}
 
 	track = LIBMTP_new_track_t ();
 	track->title = rhythmdb_entry_dup_string (entry, RHYTHMDB_PROP_TITLE);
@@ -1043,16 +1213,26 @@ prepare_encoder_sink_cb (RBEncoderFactory *factory,
 	track->artist = rhythmdb_entry_dup_string (entry, RHYTHMDB_PROP_ARTIST);
 	track->genre = rhythmdb_entry_dup_string (entry, RHYTHMDB_PROP_GENRE);
 
-	/* build up device filename; may want to reconsider if we start creating folders */
+	/* build up device filename */
 	track->filename = g_strdup_printf ("%s - %s.%s",
 					   rhythmdb_entry_get_string (entry, RHYTHMDB_PROP_ARTIST),
 					   rhythmdb_entry_get_string (entry, RHYTHMDB_PROP_TITLE),
 					   extension);
 	g_free (extension);
 
+	/* construct folder path: artist/album */
+	folder_path = g_new0 (char *, 3);
+	folder_path[0] = rhythmdb_entry_dup_string (entry, RHYTHMDB_PROP_ALBUM_ARTIST);
+	if (folder_path[0] == NULL || folder_path[0][0] == '\0') {
+		g_free (folder_path[0]);
+		folder_path[0] = rhythmdb_entry_dup_string (entry, RHYTHMDB_PROP_ARTIST);
+	}
+	folder_path[1] = rhythmdb_entry_dup_string (entry, RHYTHMDB_PROP_ALBUM);
+
 	/* ensure the filename is safe for FAT filesystems and doesn't contain slashes */
-	rb_sanitize_path_for_msdos_filesystem (track->filename);
-	g_strdelimit (track->filename, "/", '_');
+	sanitize_for_mtp (track->filename);
+	sanitize_for_mtp (folder_path[0]);
+	sanitize_for_mtp (folder_path[1]);
 
 	if (rhythmdb_entry_get_ulong (entry, RHYTHMDB_PROP_DATE) > 0) {
 		g_date_set_julian (&d, rhythmdb_entry_get_ulong (entry, RHYTHMDB_PROP_DATE));
@@ -1065,8 +1245,13 @@ prepare_encoder_sink_cb (RBEncoderFactory *factory,
 
 	track->filetype = filetype;
 
-	g_object_set (sink, "device-thread", priv->device_thread, "mtp-track", track, NULL);
+	g_object_set (sink,
+		      "device-thread", priv->device_thread,
+		      "folder-path", folder_path,
+		      "mtp-track", track,
+		      NULL);
 	rhythmdb_entry_unref (entry);
+	g_strfreev (folder_path);
 
 	g_hash_table_insert (priv->track_transfer_map, g_strdup (stream_uri), track);
 }
@@ -1104,6 +1289,9 @@ impl_build_dest_uri (RBRemovableMediaSource *source,
 	 * encoder; and then passed to whatever gets called when the transfer is complete.
 	 */
 	id = rhythmdb_entry_get_ulong (entry, RHYTHMDB_PROP_ENTRY_ID);
+	if (extension == NULL) {
+		extension = "";
+	}
 	uri = g_strdup_printf ("xrbmtp://%lu/%s/%d", id, extension, filetype);
 	return uri;
 }
@@ -1132,8 +1320,31 @@ artwork_notify_cb (RhythmDB *db,
 
 	rb_mtp_thread_set_album_image (priv->device_thread, album_name, pixbuf);
 	queue_free_space_update (source);
+}
 
-	g_object_unref (pixbuf);		/* ? */
+
+static void
+impl_get_entries (RBMediaPlayerSource *source, const char *category, GHashTable *map)
+{
+	RBMtpSourcePrivate *priv = MTP_SOURCE_GET_PRIVATE (source);
+	GHashTableIter iter;
+	gpointer key, value;
+	gboolean podcast;
+
+	/* sync category mapping is a bit hackish here, as MTP doesn't categorise
+	 * tracks itself.  matching specific genres is about the best we can do.
+	 */
+	podcast = (g_str_equal (category, SYNC_CATEGORY_PODCAST));
+
+	g_hash_table_iter_init (&iter, priv->entry_map);
+	while (g_hash_table_iter_next (&iter, &key, &value)) {
+		LIBMTP_track_t *track = value;
+
+		if ((g_strcmp0 (track->genre, "Podcast") == 0) == podcast) {
+			RhythmDBEntry *entry = key;
+			_rb_media_player_source_add_to_map (map, entry);
+		}
+	}
 }
 
 static guint64
@@ -1151,6 +1362,185 @@ impl_get_free_space	(RBMediaPlayerSource *source)
 	return priv->free_space;
 }
 
+typedef struct {
+	gboolean actually_free;
+	GHashTable *check_folders;
+	RBMediaPlayerSource *source;
+	RBMediaPlayerSourceDeleteCallback callback;
+	gpointer callback_data;
+	GDestroyNotify destroy_data;
+} TracksDeletedCallbackData;
+
+static void
+free_delete_data (TracksDeletedCallbackData *data)
+{
+	if (data->actually_free == FALSE) {
+		return;
+	}
+
+	g_hash_table_destroy (data->check_folders);
+	g_object_unref (data->source);
+	if (data->destroy_data) {
+		data->destroy_data (data->callback_data);
+	}
+	g_free (data);
+}
+
+static gboolean
+delete_done_idle_cb (TracksDeletedCallbackData *data)
+{
+	if (data->callback) {
+		data->callback (data->source, data->callback_data);
+	}
+
+	data->actually_free = TRUE;
+	free_delete_data (data);
+	return FALSE;
+}
+
+static void
+delete_done_cb (LIBMTP_mtpdevice_t *device, TracksDeletedCallbackData *data)
+{
+	LIBMTP_folder_t *folders;
+	LIBMTP_file_t *files;
+
+	data->actually_free = FALSE;
+	update_free_space_cb (device, RB_MTP_SOURCE (data->source));
+
+	/* if any of the folders we just deleted from are now empty, delete them */
+	folders = LIBMTP_Get_Folder_List (device);
+	files = LIBMTP_Get_Filelisting_With_Callback (device, NULL, NULL);
+	if (folders != NULL) {
+		GHashTableIter iter;
+		gpointer key;
+		g_hash_table_iter_init (&iter, data->check_folders);
+		while (g_hash_table_iter_next (&iter, &key, NULL)) {
+			LIBMTP_folder_t *f;
+			LIBMTP_folder_t *c;
+			LIBMTP_file_t *file;
+			uint32_t folder_id = GPOINTER_TO_UINT(key);
+
+			while (folder_id != device->default_music_folder && folder_id != 0) {
+
+				f = LIBMTP_Find_Folder (folders, folder_id);
+				if (f == NULL) {
+					rb_debug ("unable to find folder %u", folder_id);
+					break;
+				}
+
+				/* don't delete folders with children that we didn't just delete */
+				for (c = f->child; c != NULL; c = c->sibling) {
+					if (g_hash_table_lookup (data->check_folders,
+								 GUINT_TO_POINTER (c->folder_id)) == NULL) {
+						break;
+					}
+				}
+				if (c != NULL) {
+					rb_debug ("folder %s has children", f->name);
+					break;
+				}
+
+				/* don't delete folders that contain files */
+				for (file = files; file != NULL; file = file->next) {
+					if (file->parent_id == folder_id) {
+						break;
+					}
+				}
+
+				if (file != NULL) {
+					rb_debug ("folder %s contains at least one file: %s", f->name, file->filename);
+					break;
+				}
+
+				/* ok, the folder is empty */
+				rb_debug ("deleting empty folder %s", f->name);
+				LIBMTP_Delete_Object (device, f->folder_id);
+
+				/* if the folder we just deleted has siblings, the parent
+				 * can't be empty.
+				 */
+				if (f->sibling != NULL) {
+					rb_debug ("folder %s has siblings, can't delete parent", f->name);
+					break;
+				}
+				folder_id = f->parent_id;
+			}
+		}
+
+		LIBMTP_destroy_folder_t (folders);
+	} else {
+		rb_debug ("unable to get device folder list");
+	}
+
+	/* clean up the file list */
+	while (files != NULL) {
+		LIBMTP_file_t *n;
+
+		n = files->next;
+		LIBMTP_destroy_file_t (files);
+		files = n;
+	}
+
+	g_idle_add ((GSourceFunc) delete_done_idle_cb, data);
+}
+
+static void
+impl_delete_entries	(RBMediaPlayerSource *source,
+			 GList *entries,
+			 RBMediaPlayerSourceDeleteCallback callback,
+			 gpointer user_data,
+			 GDestroyNotify destroy_data)
+{
+	RBMtpSourcePrivate *priv = MTP_SOURCE_GET_PRIVATE (source);
+	RhythmDB *db;
+	GList *i;
+	TracksDeletedCallbackData *cb_data;
+
+	cb_data = g_new0 (TracksDeletedCallbackData, 1);
+	cb_data->source = g_object_ref (source);
+	cb_data->callback_data = user_data;
+	cb_data->callback = callback;
+	cb_data->destroy_data = destroy_data;
+	cb_data->check_folders = g_hash_table_new (g_direct_hash, g_direct_equal);
+
+	db = get_db_for_source (RB_MTP_SOURCE (source));
+	for (i = entries; i != NULL; i = i->next) {
+		LIBMTP_track_t *track;
+		const char *uri;
+		const char *album_name;
+		RhythmDBEntry *entry;
+
+		entry = i->data;
+		uri = rhythmdb_entry_get_string (entry, RHYTHMDB_PROP_LOCATION);
+		track = g_hash_table_lookup (priv->entry_map, entry);
+		if (track == NULL) {
+			rb_debug ("Couldn't find track on mtp-device! (%s)", uri);
+			continue;
+		}
+
+		album_name = rhythmdb_entry_get_string (entry, RHYTHMDB_PROP_ALBUM);
+		if (g_strcmp0 (album_name, _("Unknown")) != 0) {
+			rb_mtp_thread_remove_from_album (priv->device_thread, track, album_name);
+		}
+		rb_mtp_thread_delete_track (priv->device_thread, track);
+
+		g_hash_table_insert (cb_data->check_folders,
+				     GUINT_TO_POINTER (track->parent_id),
+				     GINT_TO_POINTER (1));
+
+		g_hash_table_remove (priv->entry_map, entry);
+		rhythmdb_entry_delete (db, entry);
+	}
+
+	/* callback when all tracks have been deleted */
+	rb_mtp_thread_queue_callback (priv->device_thread,
+				      (RBMtpThreadCallback) delete_done_cb,
+				      cb_data,
+				      (GDestroyNotify) free_delete_data);
+
+	rhythmdb_commit (db);
+}
+
 static void
 impl_show_properties (RBMediaPlayerSource *source, GtkWidget *info_box, GtkWidget *notebook)
 {
@@ -1164,6 +1554,9 @@ impl_show_properties (RBMediaPlayerSource *source, GtkWidget *info_box, GtkWidge
 	char *builder_file;
 	RBPlugin *plugin;
 	char *text;
+	GList *output_formats;
+	GList *t;
+	GString *str;
 
 	g_object_get (source, "plugin", &plugin, NULL);
 	builder_file = rb_plugin_find_file (plugin, "mtp-info.ui");
@@ -1234,6 +1627,20 @@ impl_show_properties (RBMediaPlayerSource *source, GtkWidget *info_box, GtkWidge
 	widget = GTK_WIDGET (gtk_builder_get_object (builder, "label-manufacturer-value"));
 	gtk_label_set_text (GTK_LABEL (widget), priv->manufacturer);
 
+	str = g_string_new ("");
+	output_formats = rb_removable_media_source_get_format_descriptions (RB_REMOVABLE_MEDIA_SOURCE (source));
+	for (t = output_formats; t != NULL; t = t->next) {
+		if (t != output_formats) {
+			g_string_append (str, "\n");
+		}
+		g_string_append (str, t->data);
+	}
+	rb_list_deep_free (output_formats);
+
+	widget = GTK_WIDGET (gtk_builder_get_object (builder, "label-audio-formats-value"));
+	gtk_label_set_text (GTK_LABEL (widget), str->str);
+	g_string_free (str, TRUE);
+
 	g_object_unref (builder);
 }
 
@@ -1282,3 +1689,64 @@ prepare_encoder_source_cb (RBEncoderFactory *factory,
 	prepare_source (source, stream_uri, src);
 }
 
+static gboolean
+impl_can_eject (RBRemovableMediaSource *source)
+{
+	return TRUE;
+}
+
+static void
+impl_eject (RBRemovableMediaSource *source)
+{
+	rb_source_delete_thyself (RB_SOURCE (source));
+}
+
+#if defined(HAVE_GUDEV)
+
+static GMount *
+find_mount_for_device (GUdevDevice *device)
+{
+	GMount *mount = NULL;
+	const char *device_file;
+	GVolumeMonitor *volmon;
+	GList *mounts;
+	GList *i;
+
+	device_file = g_udev_device_get_device_file (device);
+	if (device_file == NULL) {
+		return NULL;
+	}
+
+	volmon = g_volume_monitor_get ();
+	mounts = g_volume_monitor_get_mounts (volmon);
+	g_object_unref (volmon);
+
+	for (i = mounts; i != NULL; i = i->next) {
+		GVolume *v;
+
+		v = g_mount_get_volume (G_MOUNT (i->data));
+		if (v != NULL) {
+			char *devname = NULL;
+			gboolean match;
+
+			devname = g_volume_get_identifier (v, G_VOLUME_IDENTIFIER_KIND_UNIX_DEVICE);
+			g_object_unref (v);
+			if (devname == NULL)
+				continue;
+
+			match = g_str_equal (devname, device_file);
+			g_free (devname);
+
+			if (match) {
+				mount = G_MOUNT (i->data);
+				g_object_ref (G_OBJECT (mount));
+				break;
+			}
+		}
+	}
+	g_list_foreach (mounts, (GFunc)g_object_unref, NULL);
+	g_list_free (mounts);
+	return mount;
+}
+
+#endif

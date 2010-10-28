@@ -27,6 +27,15 @@
  *
  */
 
+/**
+ * SECTION:rb-shell
+ * @short_description: holds the Rhythmbox main window and everything else
+ *
+ * RBShell is the main application class in Rhythmbox.  It creates and holds
+ * references to the other main objects (#RBShellPlayer, #RhythmDB, #RBSourceList),
+ * constructs the main window UI, and provides the basic DBus interface.
+ */
+
 #include <config.h>
 
 #include <string.h>
@@ -58,6 +67,7 @@
 #include "rb-source.h"
 #include "rb-playlist-manager.h"
 #include "rb-removable-media-manager.h"
+#include "rb-track-transfer-queue.h"
 #include "rb-preferences.h"
 #include "rb-shell-clipboard.h"
 #include "rb-shell-player.h"
@@ -81,6 +91,9 @@
 #include "rb-song-info.h"
 #include "rb-marshal.h"
 #include "rb-missing-plugins.h"
+#include "rb-podcast-manager.h"
+#include "rb-podcast-main-source.h"
+#include "rb-podcast-entry-types.h"
 
 #include "eggsmclient.h"
 
@@ -127,23 +140,17 @@ static void rb_shell_playing_from_queue_cb (RBShellPlayer *player,
 static void source_activated_cb (RBSourceList *sourcelist,
 				 RBSource *source,
 				 RBShell *shell);
-static void rb_shell_activate_source (RBShell *shell,
-				      RBSource *source);
+static gboolean rb_shell_activate_source (RBShell *shell,
+					  RBSource *source,
+					  guint play,
+					  GError **error);
 static void rb_shell_db_save_error_cb (RhythmDB *db,
 				       const char *uri, const GError *error,
 				       RBShell *shell);
-static void rb_shell_db_entry_added_cb (RhythmDB *db,
-					RhythmDBEntry *entry,
-					RBShell *shell);
 
 static void rb_shell_playlist_added_cb (RBPlaylistManager *mgr, RBSource *source, RBShell *shell);
 static void rb_shell_playlist_created_cb (RBPlaylistManager *mgr, RBSource *source, RBShell *shell);
 static void rb_shell_medium_added_cb (RBRemovableMediaManager *mgr, RBSource *source, RBShell *shell);
-static void rb_shell_transfer_progress_cb (RBRemovableMediaManager *mgr,
-					   gint done,
-					   gint total,
-					   double fraction,
-					   RBShell *shell);
 static void rb_shell_source_deleted_cb (RBSource *source, RBShell *shell);
 static void rb_shell_set_window_title (RBShell *shell, const char *window_title);
 static void rb_shell_player_window_title_changed_cb (RBShellPlayer *player,
@@ -254,6 +261,8 @@ enum
 	PROP_SOURCELIST,
 	PROP_SOURCE_HEADER,
 	PROP_VISIBILITY,
+	PROP_TRACK_TRANSFER_QUEUE,
+	PROP_AUTOSTARTED
 };
 
 /* prefs */
@@ -276,6 +285,7 @@ enum
 	REMOVABLE_MEDIA_SCAN_FINISHED,
 	NOTIFY_PLAYING_ENTRY,
 	NOTIFY_CUSTOM,
+	DATABASE_LOAD_COMPLETE,
 	LAST_SIGNAL
 };
 
@@ -283,7 +293,7 @@ static guint rb_shell_signals[LAST_SIGNAL] = { 0 };
 
 G_DEFINE_TYPE (RBShell, rb_shell, G_TYPE_OBJECT)
 
-struct RBShellPrivate
+struct _RBShellPrivate
 {
 	GtkWidget *window;
 	gboolean iconified;
@@ -319,11 +329,11 @@ struct RBShellPrivate
 	gboolean no_registration;
 	gboolean no_update;
 	gboolean dry_run;
+	gboolean autostarted;
 	char *rhythmdb_file;
 	char *playlists_file;
 
 	RhythmDB *db;
-	char *pending_entry;
 
 	RBShellPlayer *player_shell;
 	RBShellClipboard *clipboard_shell;
@@ -331,6 +341,8 @@ struct RBShellPrivate
 	RBStatusbar *statusbar;
 	RBPlaylistManager *playlist_manager;
 	RBRemovableMediaManager *removable_media_manager;
+	RBTrackTransferQueue *track_transfer_queue;
+	RBPodcastManager *podcast_manager;
 
 	RBLibrarySource *library_source;
 	RBPodcastSource *podcast_source;
@@ -451,6 +463,11 @@ rb_shell_class_init (RBShellClass *klass)
 
 	klass->visibility_changing = rb_shell_visibility_changing;
 
+	/**
+	 * RBShell:no-registration:
+	 *
+	 * If %TRUE, disable single-instance features.
+	 */
 	g_object_class_install_property (object_class,
 					 PROP_NO_REGISTRATION,
 					 g_param_spec_boolean ("no-registration",
@@ -458,7 +475,11 @@ rb_shell_class_init (RBShellClass *klass)
 							       "Whether or not to register",
 							       FALSE,
 							       G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
-
+	/**
+	 * RBShell:no-update:
+	 *
+	 * If %TRUE, don't update the database.
+	 */
 	g_object_class_install_property (object_class,
 					 PROP_NO_UPDATE,
 					 g_param_spec_boolean ("no-update",
@@ -466,7 +487,11 @@ rb_shell_class_init (RBShellClass *klass)
 							       "Whether or not to update the library",
 							       FALSE,
 							       G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
-
+	/**
+	 * RBShell:dry-run:
+	 *
+	 * If TRUE, don't write back file metadata changes.
+	 */
 	g_object_class_install_property (object_class,
 					 PROP_DRY_RUN,
 					 g_param_spec_boolean ("dry-run",
@@ -474,7 +499,11 @@ rb_shell_class_init (RBShellClass *klass)
 							       "Whether or not this is a dry run",
 							       FALSE,
 							       G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
-
+	/**
+	 * RBShell:rhythmdb-file:
+	 *
+	 * The path to the rhythmdb file
+	 */
 	g_object_class_install_property (object_class,
 					 PROP_RHYTHMDB_FILE,
 					 g_param_spec_string ("rhythmdb-file",
@@ -487,7 +516,11 @@ rb_shell_class_init (RBShellClass *klass)
 #endif
 							      G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
 
-
+	/**
+	 * RBShell:playlists-file:
+	 *
+	 * The path to the playlist file
+	 */
 	g_object_class_install_property (object_class,
 					 PROP_PLAYLISTS_FILE,
 					 g_param_spec_string ("playlists-file", 
@@ -497,7 +530,11 @@ rb_shell_class_init (RBShellClass *klass)
 							      G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
 
 
-
+	/**
+	 * RBShell:selected-source:
+	 *
+	 * The currently selected source object
+	 */
 	g_object_class_install_property (object_class,
 					 PROP_SELECTED_SOURCE,
 					 g_param_spec_object ("selected-source",
@@ -505,7 +542,11 @@ rb_shell_class_init (RBShellClass *klass)
 							      "Source which is currently selected",
 							      RB_TYPE_SOURCE,
 							      G_PARAM_READABLE));
-
+	/**
+	 * RBShell:db:
+	 *
+	 * The #RhythmDB instance
+	 */
 	g_object_class_install_property (object_class,
 					 PROP_DB,
 					 g_param_spec_object ("db",
@@ -513,7 +554,11 @@ rb_shell_class_init (RBShellClass *klass)
 							      "RhythmDB object",
 							      RHYTHMDB_TYPE,
 							      G_PARAM_READABLE));
-
+	/**
+	 * RBShell:ui-manager:
+	 *
+	 * The #GtkUIManager instance
+	 */
 	g_object_class_install_property (object_class,
 					 PROP_UI_MANAGER,
 					 g_param_spec_object ("ui-manager",
@@ -521,7 +566,11 @@ rb_shell_class_init (RBShellClass *klass)
 							      "GtkUIManager object",
 							      GTK_TYPE_UI_MANAGER,
 							      G_PARAM_READABLE));
-
+	/**
+	 * RBShell:clipboard:
+	 *
+	 * The #RBShellClipboard instance
+	 */
 	g_object_class_install_property (object_class,
 					 PROP_CLIPBOARD,
 					 g_param_spec_object ("clipboard",
@@ -529,6 +578,11 @@ rb_shell_class_init (RBShellClass *klass)
 							      "RBShellClipboard object",
 							      RB_TYPE_SHELL_CLIPBOARD,
 							      G_PARAM_READABLE));
+	/**
+	 * RBShell:playlist-manager:
+	 *
+	 * The #RBPlaylistManager instance
+	 */
 	g_object_class_install_property (object_class,
 					 PROP_PLAYLIST_MANAGER,
 					 g_param_spec_object ("playlist-manager",
@@ -536,6 +590,11 @@ rb_shell_class_init (RBShellClass *klass)
 							      "RBPlaylistManager object",
 							      RB_TYPE_PLAYLIST_MANAGER,
 							      G_PARAM_READABLE));
+	/**
+	 * RBShell:shell-player:
+	 *
+	 * The #RBShellPlayer instance
+	 */
 	g_object_class_install_property (object_class,
 					 PROP_SHELL_PLAYER,
 					 g_param_spec_object ("shell-player",
@@ -543,6 +602,11 @@ rb_shell_class_init (RBShellClass *klass)
 							      "RBShellPlayer object",
 							      RB_TYPE_SHELL_PLAYER,
 							      G_PARAM_READABLE));
+	/**
+	 * RBShell:removable-media-manager:
+	 *
+	 * The #RBRemovableMediaManager instance
+	 */
 	g_object_class_install_property (object_class,
 					 PROP_REMOVABLE_MEDIA_MANAGER,
 					 g_param_spec_object ("removable-media-manager",
@@ -550,6 +614,11 @@ rb_shell_class_init (RBShellClass *klass)
 							      "RBRemovableMediaManager object",
 							      RB_TYPE_REMOVABLE_MEDIA_MANAGER,
 							      G_PARAM_READABLE));
+	/**
+	 * RBShell:window:
+	 *
+	 * The main Rhythmbox window.
+	 */
 	g_object_class_install_property (object_class,
 					 PROP_WINDOW,
 					 g_param_spec_object ("window",
@@ -557,6 +626,11 @@ rb_shell_class_init (RBShellClass *klass)
 							      "GtkWindow object",
 							      GTK_TYPE_WINDOW,
 							      G_PARAM_READABLE));
+	/**
+	 * RBShell:prefs:
+	 *
+	 * The #RBShellPreferences instance
+	 */
 	g_object_class_install_property (object_class,
 					 PROP_PREFS,
 					 g_param_spec_object ("prefs",
@@ -564,6 +638,11 @@ rb_shell_class_init (RBShellClass *klass)
 							      "RBShellPreferences object",
 							      RB_TYPE_SHELL_PREFERENCES,
 							      G_PARAM_READABLE));
+	/**
+	 * RBShell:queue-source:
+	 *
+	 * The play queue source
+	 */
 	g_object_class_install_property (object_class,
 					 PROP_QUEUE_SOURCE,
 					 g_param_spec_object ("queue-source",
@@ -571,6 +650,11 @@ rb_shell_class_init (RBShellClass *klass)
 							      "Queue source",
 							      RB_TYPE_PLAY_QUEUE_SOURCE,
 							      G_PARAM_READABLE));
+	/**
+	 * RBShell:library-source:
+	 *
+	 * The library source
+	 */
 	g_object_class_install_property (object_class,
 					 PROP_LIBRARY_SOURCE,
 					 g_param_spec_object ("library-source",
@@ -578,6 +662,11 @@ rb_shell_class_init (RBShellClass *klass)
 							      "Library source",
 							      RB_TYPE_LIBRARY_SOURCE,
 							      G_PARAM_READABLE));
+	/**
+	 * RBShell:sourcelist-model:
+	 *
+	 * The tree model underlying the source list.
+	 */
 	g_object_class_install_property (object_class,
 					 PROP_SOURCELIST_MODEL,
 					 g_param_spec_object ("sourcelist-model",
@@ -586,14 +675,24 @@ rb_shell_class_init (RBShellClass *klass)
 							      RB_TYPE_SOURCELIST_MODEL,
 							      G_PARAM_READABLE));
 
+	/**
+	 * RBShell:sourcelist:
+	 *
+	 * The #RBSourceList instance
+	 */
 	g_object_class_install_property (object_class,
 					 PROP_SOURCELIST,
 					 g_param_spec_object ("sourcelist",
 							      "sourcelist",
-							      "RBSourcelist",
+							      "RBSourceList",
 							      RB_TYPE_SOURCELIST,
 							      G_PARAM_READABLE));
 
+	/**
+	 * RBShell:visibility:
+	 *
+	 * Whether the main window is currently visible.
+	 */
 	g_object_class_install_property (object_class,
 					 PROP_VISIBILITY,
 					 g_param_spec_boolean ("visibility",
@@ -601,6 +700,11 @@ rb_shell_class_init (RBShellClass *klass)
 							       "Current window visibility",
 							       TRUE,
 							       G_PARAM_READWRITE));
+	/**
+	 * RBShell:source-header:
+	 *
+	 * The #RBSourceHeader instance
+	 */
 	g_object_class_install_property (object_class,
 					 PROP_SOURCE_HEADER,
 					 g_param_spec_object ("source-header",
@@ -609,6 +713,39 @@ rb_shell_class_init (RBShellClass *klass)
 							      RB_TYPE_SOURCE_HEADER,
 							      G_PARAM_READABLE));
 
+	/**
+	 * RBShell:track-transfer-queue:
+	 *
+	 * The #RBTrackTransferQueue instance
+	 */
+	g_object_class_install_property (object_class,
+					 PROP_TRACK_TRANSFER_QUEUE,
+					 g_param_spec_object ("track-transfer-queue",
+							      "RBTrackTransferQueue",
+							      "RBTrackTransferQueue object",
+							      RB_TYPE_TRACK_TRANSFER_QUEUE,
+							      G_PARAM_READABLE));
+	/**
+	 * RBShell:autostarted:
+	 *
+	 * Whether Rhythmbox was automatically started by the session manager
+	 */
+	g_object_class_install_property (object_class,
+					 PROP_AUTOSTARTED,
+					 g_param_spec_boolean ("autostarted",
+							       "autostarted",
+							       "TRUE if autostarted",
+							       FALSE,
+							       G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
+
+	/**
+	 * RBShell::visibility-changed:
+	 * @shell: the #RBShell
+	 * @visibile: new visibility
+	 *
+	 * Emitted after the visibility of the main Rhythmbox window has
+	 * changed.
+	 */
 	rb_shell_signals[VISIBILITY_CHANGED] =
 		g_signal_new ("visibility_changed",
 			      G_OBJECT_CLASS_TYPE (object_class),
@@ -619,6 +756,16 @@ rb_shell_class_init (RBShellClass *klass)
 			      G_TYPE_NONE,
 			      1,
 			      G_TYPE_BOOLEAN);
+	/**
+	 * RBShell::visibility-changing:
+	 * @shell: the #RBShell
+	 * @initial: if %TRUE, this is the initial visibility for the window
+	 * @visible: new shell visibility
+	 *
+	 * Emitted before the visibility of the main window changes.  The return
+	 * value overrides the visibility setting.  If multiple signal handlers
+	 * are attached, the last one wins.
+	 */
 	rb_shell_signals[VISIBILITY_CHANGING] =
 		g_signal_new ("visibility_changing",
 			      G_OBJECT_CLASS_TYPE (object_class),
@@ -631,6 +778,16 @@ rb_shell_class_init (RBShellClass *klass)
 			      G_TYPE_BOOLEAN,
 			      G_TYPE_BOOLEAN);
 
+	/**
+	 * RBShell::create-song-info:
+	 * @shell: the #RBShell
+	 * @song_info: the new #RBSongInfo window
+	 * @multi: if %TRUE, the song info window is for multiple entries
+	 *
+	 * Emitted when creating a new #RBSongInfo window.  Signal handlers can
+	 * add pages to the song info window notebook to display additional
+	 * information.
+	 */
 	rb_shell_signals[CREATE_SONG_INFO] =
 		g_signal_new ("create_song_info",
 			      G_OBJECT_CLASS_TYPE (object_class),
@@ -641,6 +798,17 @@ rb_shell_class_init (RBShellClass *klass)
 			      G_TYPE_NONE,
 			      2,
 			      RB_TYPE_SONG_INFO, G_TYPE_BOOLEAN);
+	/**
+	 * RBShell::removable-media-scan-finished:
+	 * @shell: the #RBShell
+	 *
+	 * Emitted when the initial scan for removable media devices is
+	 * complete.  This is intended to allow plugins to request a
+	 * device scan only if the scan on startup has already been done,
+	 * but it isn't very useful for that.
+	 * See #RBRemovableMediaManager:scanned for a better approach to
+	 * this problem.
+	 */
 	rb_shell_signals[REMOVABLE_MEDIA_SCAN_FINISHED] =
 		g_signal_new ("removable_media_scan_finished",
 			      G_OBJECT_CLASS_TYPE (object_class),
@@ -650,6 +818,13 @@ rb_shell_class_init (RBShellClass *klass)
 			      g_cclosure_marshal_VOID__VOID,
 			      G_TYPE_NONE,
 			      0);
+	/**
+	 * RBShell::notify-playing-entry:
+	 * @shell: the #RBShell
+	 *
+	 * Emitted when a notification should be displayed showing the current
+	 * playing entry.
+	 */
 	rb_shell_signals[NOTIFY_PLAYING_ENTRY] =
 		g_signal_new ("notify-playing-entry",
 			      G_OBJECT_CLASS_TYPE (object_class),
@@ -660,6 +835,17 @@ rb_shell_class_init (RBShellClass *klass)
 			      G_TYPE_NONE,
 			      1,
 			      G_TYPE_BOOLEAN);
+	/**
+	 * RBShell::notify-custom:
+	 * @shell: the #RBShell
+	 * @timeout: length of time (in seconds) to display the notification
+	 * @primary: main notification text
+	 * @secondary: secondary notification text
+	 * @pixbuf: an image to include in the notification (optional)
+	 * @requested: if %TRUE, the notification was triggered by an explicit user action
+	 *
+	 * Emitted when a custom notification should be displayed to the user.
+	 */
 	rb_shell_signals[NOTIFY_CUSTOM] =
 		g_signal_new ("notify-custom",
 			      G_OBJECT_CLASS_TYPE (object_class),
@@ -670,6 +856,23 @@ rb_shell_class_init (RBShellClass *klass)
 			      G_TYPE_NONE,
 			      5,
 			      G_TYPE_UINT, G_TYPE_STRING, G_TYPE_STRING, GDK_TYPE_PIXBUF, G_TYPE_BOOLEAN);
+	/**
+	 * RBShell::database-load-complete:
+	 * @shell: the #RBShell
+	 *
+	 * Emitted when the database has been loaded.  This is intended to allow
+	 * DBus clients that start a new instance of the application to wait until
+	 * a reasonable amount of state has been loaded before making further requests.
+	 */
+	rb_shell_signals[DATABASE_LOAD_COMPLETE] =
+		g_signal_new ("database-load-complete",
+			      G_OBJECT_CLASS_TYPE (object_class),
+			      G_SIGNAL_RUN_LAST,
+			      G_STRUCT_OFFSET (RBShellClass, database_load_complete),
+			      NULL, NULL,
+			      g_cclosure_marshal_VOID__VOID,
+			      G_TYPE_NONE,
+			      0);
 
 	g_type_class_add_private (klass, sizeof (RBShellPrivate));
 }
@@ -717,6 +920,9 @@ rb_shell_set_property (GObject *object,
 		break;
 	case PROP_VISIBILITY:
 		rb_shell_set_visibility (shell, FALSE, g_value_get_boolean (value));
+		break;
+	case PROP_AUTOSTARTED:
+		shell->priv->autostarted = g_value_get_boolean (value);
 		break;
 	default:
 		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -774,6 +980,17 @@ rb_shell_get_property (GObject *object,
 		g_value_set_object (value, shell->priv->window);
 		break;
 	case PROP_PREFS:
+		/* create the preferences window the first time we need it */
+		if (shell->priv->prefs == NULL) {
+			GtkWidget *content;
+
+			shell->priv->prefs = rb_shell_preferences_new (shell->priv->sources);
+
+			gtk_window_set_transient_for (GTK_WINDOW (shell->priv->prefs),
+						      GTK_WINDOW (shell->priv->window));
+			content = gtk_dialog_get_content_area (GTK_DIALOG (shell->priv->prefs));
+			gtk_widget_show_all (content);
+		}
 		g_value_set_object (value, shell->priv->prefs);
 		break;
 	case PROP_QUEUE_SOURCE:
@@ -799,6 +1016,12 @@ rb_shell_get_property (GObject *object,
 		break;
 	case PROP_SOURCE_HEADER:
 		g_value_set_object (value, shell->priv->source_header);
+		break;
+	case PROP_TRACK_TRANSFER_QUEUE:
+		g_value_set_object (value, shell->priv->track_transfer_queue);
+		break;
+	case PROP_AUTOSTARTED:
+		g_value_set_boolean (value, shell->priv->autostarted);
 		break;
 	default:
 		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -899,13 +1122,17 @@ rb_shell_finalize (GObject *object)
 	rb_playlist_manager_shutdown (shell->priv->playlist_manager);
 
 	rb_debug ("unreffing playlist manager");
-	g_object_unref (G_OBJECT (shell->priv->playlist_manager));
+	g_object_unref (shell->priv->playlist_manager);
 
 	rb_debug ("unreffing removable media manager");
-	g_object_unref (G_OBJECT (shell->priv->removable_media_manager));
+	g_object_unref (shell->priv->removable_media_manager);
+	g_object_unref (shell->priv->track_transfer_queue);
+
+	rb_debug ("unreffing podcast manager");
+	g_object_unref (shell->priv->podcast_manager);
 
 	rb_debug ("unreffing clipboard shell");
-	g_object_unref (G_OBJECT (shell->priv->clipboard_shell));
+	g_object_unref (shell->priv->clipboard_shell);
 
 	rb_debug ("destroying prefs");
 	if (shell->priv->prefs != NULL)
@@ -927,17 +1154,32 @@ rb_shell_finalize (GObject *object)
 	rhythmdb_shutdown (shell->priv->db);
 
 	rb_debug ("unreffing DB");
-	g_object_unref (G_OBJECT (shell->priv->db));
+	g_object_unref (shell->priv->db);
 
-        ((GObjectClass*)rb_shell_parent_class)->finalize (G_OBJECT (shell));
+        G_OBJECT_CLASS (rb_shell_parent_class)->finalize (object);
 
 	rb_debug ("shell shutdown complete");
 }
 
+/**
+ * rb_shell_new:
+ * @no_registration: if %TRUE, single-instance features are disabled
+ * @no_update: if %TRUE, don't update the database file
+ * @dry_run: if %TRUE, don't write back file metadata changes
+ * @autostarted: %TRUE if autostarted by the session manager
+ * @rhythmdb: path to the database file
+ * @playlists: path to the playlist file
+ *
+ * Creates the Rhythmbox shell.  This is effectively a singleton, so it doesn't
+ * make sense to call this from anywhere other than main.c.
+ *
+ * Return value: the #RBShell instance
+ */
 RBShell *
 rb_shell_new (gboolean no_registration,
 	      gboolean no_update,
 	      gboolean dry_run,
+	      gboolean autostarted,
 	      char *rhythmdb,
 	      char *playlists)
 {
@@ -945,13 +1187,19 @@ rb_shell_new (gboolean no_registration,
 			  "no-registration", no_registration,
 			  "no-update", no_update,
 			  "dry-run", dry_run, "rhythmdb-file", rhythmdb, 
-			  "playlists-file", playlists, NULL);
+			  "playlists-file", playlists,
+			  "autostarted", autostarted,
+			  NULL);
 }
 
 static GMountOperation *
 rb_shell_create_mount_op_cb (RhythmDB *db, RBShell *shell)
 {
-	return gtk_mount_operation_new (GTK_WINDOW (shell->priv->window));
+	/* we don't want the operation to be modal, so we don't associate it with the window. */
+	GMountOperation *op = gtk_mount_operation_new (NULL);
+	gtk_mount_operation_set_screen (GTK_MOUNT_OPERATION (op),
+					gtk_window_get_screen (GTK_WINDOW (shell->priv->window)));
+	return op;
 }
 
 static void
@@ -1030,6 +1278,8 @@ construct_widgets (RBShell *shell)
 
 	rb_debug ("shell: initializing shell services");
 
+	shell->priv->podcast_manager = rb_podcast_manager_new (shell->priv->db);
+	shell->priv->track_transfer_queue = rb_track_transfer_queue_new (shell);
 	shell->priv->ui_manager = gtk_ui_manager_new ();
 	shell->priv->source_ui_merge_id = gtk_ui_manager_new_merge_id (shell->priv->ui_manager);
 
@@ -1065,7 +1315,8 @@ construct_widgets (RBShell *shell)
 				 G_CALLBACK (rb_shell_show_popup_cb), shell, 0);
 
 	shell->priv->statusbar = rb_statusbar_new (shell->priv->db,
-						   shell->priv->ui_manager);
+						   shell->priv->ui_manager,
+						   shell->priv->track_transfer_queue);
 	g_object_set (shell->priv->player_shell, "statusbar", shell->priv->statusbar, NULL);
 	gtk_widget_show (GTK_WIDGET (shell->priv->statusbar));
 
@@ -1179,12 +1430,17 @@ construct_sources (RBShell *shell)
 
 	shell->priv->library_source = RB_LIBRARY_SOURCE (rb_library_source_new (shell));
 	rb_shell_append_source (shell, RB_SOURCE (shell->priv->library_source), NULL);
-	shell->priv->podcast_source = RB_PODCAST_SOURCE (rb_podcast_source_new (shell));
+	shell->priv->podcast_source = RB_PODCAST_SOURCE (rb_podcast_main_source_new (shell, shell->priv->podcast_manager));
 	rb_shell_append_source (shell, RB_SOURCE (shell->priv->podcast_source), NULL);
 	shell->priv->missing_files_source = rb_missing_files_source_new (shell, shell->priv->library_source);
 	rb_shell_append_source (shell, shell->priv->missing_files_source, NULL);
-	shell->priv->import_errors_source = rb_import_errors_source_new (shell, RHYTHMDB_ENTRY_TYPE_IMPORT_ERROR);
+	shell->priv->import_errors_source = rb_import_errors_source_new (shell,
+									 RHYTHMDB_ENTRY_TYPE_IMPORT_ERROR,
+									 RHYTHMDB_ENTRY_TYPE_SONG,
+									 RHYTHMDB_ENTRY_TYPE_IGNORE);
 	rb_shell_append_source (shell, shell->priv->import_errors_source, NULL);
+
+	rb_podcast_main_source_add_subsources (RB_PODCAST_MAIN_SOURCE (shell->priv->podcast_source));
 
 	/* Find the playlist name if none supplied */
 	if (shell->priv->playlists_file) {
@@ -1204,7 +1460,9 @@ construct_sources (RBShell *shell)
 	shell->priv->playlist_manager = rb_playlist_manager_new (shell,
 								 RB_SOURCELIST (shell->priv->sourcelist), pathname);
 
-	g_object_set (G_OBJECT(shell->priv->clipboard_shell), "playlist-manager", shell->priv->playlist_manager, NULL);
+	g_object_set (shell->priv->clipboard_shell,
+		      "playlist-manager", shell->priv->playlist_manager,
+		      NULL);
 
 	g_signal_connect_object (G_OBJECT (shell->priv->playlist_manager), "playlist_added",
 				 G_CALLBACK (rb_shell_playlist_added_cb), shell, 0);
@@ -1217,8 +1475,7 @@ construct_sources (RBShell *shell)
 
 	g_signal_connect_object (G_OBJECT (shell->priv->removable_media_manager), "medium_added",
 				 G_CALLBACK (rb_shell_medium_added_cb), shell, 0);
-	g_signal_connect_object (G_OBJECT (shell->priv->removable_media_manager), "transfer-progress",
-				 G_CALLBACK (rb_shell_transfer_progress_cb), shell, 0);
+
 
 	g_free (pathname);
 
@@ -1368,8 +1625,6 @@ rb_shell_constructed (GObject *object)
 
 	g_signal_connect_object (G_OBJECT (shell->priv->db), "save-error",
 				 G_CALLBACK (rb_shell_db_save_error_cb), shell, 0);
-	g_signal_connect_object (G_OBJECT (shell->priv->db), "entry-added",
-				 G_CALLBACK (rb_shell_db_entry_added_cb), shell, 0);
 
 	construct_sources (shell);
 
@@ -1384,7 +1639,7 @@ rb_shell_constructed (GObject *object)
 
 	rb_plugins_engine_init (shell);
 
-	rb_missing_plugins_init (shell);
+	rb_missing_plugins_init (GTK_WINDOW (shell->priv->window));
 
 	g_idle_add ((GSourceFunc)_scan_idle, shell);
 
@@ -1414,7 +1669,9 @@ rb_shell_constructed (GObject *object)
 		RBEntryView *view;
 
 		view = rb_source_get_entry_view (RB_SOURCE (shell->priv->library_source));
-		gtk_widget_grab_focus (GTK_WIDGET (view));
+		if (view != NULL) {
+			gtk_widget_grab_focus (GTK_WIDGET (view));
+		}
 	}
 
 	rb_profile_end ("constructing shell");
@@ -1464,7 +1721,7 @@ rb_shell_get_visibility (RBShell *shell)
 {
 	GdkWindowState state;
 
-	if (!GTK_WIDGET_REALIZED (shell->priv->window))
+	if (!gtk_widget_get_realized (shell->priv->window))
 		return FALSE;
 	if (shell->priv->iconified)
 		return FALSE;
@@ -1500,7 +1757,7 @@ rb_shell_set_visibility (RBShell *shell,
 		gtk_widget_show (GTK_WIDGET (shell->priv->window));
 		gtk_window_deiconify (GTK_WINDOW (shell->priv->window));
 
-		if (GTK_WIDGET_REALIZED (GTK_WIDGET (shell->priv->window)))
+		if (gtk_widget_get_realized (GTK_WIDGET (shell->priv->window)))
 			rb_shell_present (shell, gtk_get_current_event_time (), NULL);
 		else
 			gtk_widget_show_all (GTK_WIDGET (shell->priv->window));
@@ -1655,12 +1912,13 @@ source_activated_cb (RBSourceList *sourcelist,
 {
 	rb_debug ("source activated");
 
-	rb_shell_activate_source (shell, source);
+	rb_shell_activate_source (shell, source, 2, NULL);
 }
 
-static void
-rb_shell_activate_source (RBShell *shell, RBSource *source)
+static gboolean
+rb_shell_activate_source (RBShell *shell, RBSource *source, guint play, GError **error)
 {
+	RhythmDBEntry *entry;
 	/* FIXME
 	 *
 	 * this doesn't work correctly yet, but it's still an improvement on the
@@ -1670,11 +1928,27 @@ rb_shell_activate_source (RBShell *shell, RBSource *source)
 	 * doesn't start the new one.
 	 */
 
-	/* Select the new one, and start it playing */
+	/* Select the new one, and optionally start it playing */
 	rb_shell_select_source (shell, source);
-	rb_shell_player_set_playing_source (shell->priv->player_shell, source);
-	/* Ignore error from here */
-	rb_shell_player_playpause (shell->priv->player_shell, FALSE, NULL);
+
+	switch (play) {
+	case 0:
+		return TRUE;
+
+	case 1:
+		entry = rb_shell_player_get_playing_entry (shell->priv->player_shell);
+		if (entry != NULL) {
+			rhythmdb_entry_unref (entry);
+			return TRUE;
+		}
+		/* fall through */
+	case 2:
+		rb_shell_player_set_playing_source (shell->priv->player_shell, source);
+		return rb_shell_player_playpause (shell->priv->player_shell, FALSE, error);
+
+	default:
+		return FALSE;
+	}
 }
 
 static void
@@ -1687,37 +1961,38 @@ rb_shell_db_save_error_cb (RhythmDB *db,
 			 "%s", error->message);
 }
 
-static void
-rb_shell_db_entry_added_cb (RhythmDB *db,
-			    RhythmDBEntry *entry,
-			    RBShell *shell)
-{
-	const char *loc;
-
-	if (shell->priv->pending_entry == NULL)
-		return;
-
-	loc = rhythmdb_entry_get_string (entry, RHYTHMDB_PROP_LOCATION);
-	rb_debug ("got entry added for %s", loc);
-	if (strcmp (loc, shell->priv->pending_entry) == 0) {
-		rb_shell_play_entry (shell, entry);
-
-		g_free (shell->priv->pending_entry);
-		shell->priv->pending_entry = NULL;
-	}
-}
-
+/**
+ * rb_shell_get_source_by_entry_type:
+ * @shell: the #RBShell
+ * @type: entry type for which to find a source
+ *
+ * Looks up and returns the source that owns entries of the specified
+ * type.
+ *
+ * Return value: source instance, if any
+ */
 RBSource *
 rb_shell_get_source_by_entry_type (RBShell *shell,
-				   RhythmDBEntryType type)
+				   RhythmDBEntryType *type)
 {
 	return g_hash_table_lookup (shell->priv->sources_hash, type);
 }
 
+/**
+ * rb_shell_register_entry_type_for_source:
+ * @shell: the #RBShell
+ * @source: the #RBSource to register
+ * @type: the #RhythmDBEntryType to register for
+ *
+ * Registers a source as the owner of entries of the specified type.
+ * The main effect of this is that calling #rb_shell_get_source_by_entry_type
+ * with the same entry type will return the source.  A source should only
+ * be registered as the owner of a single entry type.
+ */
 void
 rb_shell_register_entry_type_for_source (RBShell *shell,
 					 RBSource *source,
-					 RhythmDBEntryType type)
+					 RhythmDBEntryType *type)
 {
 	if (shell->priv->sources_hash == NULL) {
 		shell->priv->sources_hash = g_hash_table_new (g_direct_hash,
@@ -1727,6 +2002,15 @@ rb_shell_register_entry_type_for_source (RBShell *shell,
 	g_hash_table_insert (shell->priv->sources_hash, type, source);
 }
 
+/**
+ * rb_shell_append_source:
+ * @shell: the #RBShell
+ * @source: the new #RBSource
+ * @parent: the parent source for the new source (optional)
+ *
+ * Registers a new source with the shell.  All sources must be
+ * registered.
+ */
 void
 rb_shell_append_source (RBShell *shell,
 			RBSource *source,
@@ -1776,38 +2060,10 @@ rb_shell_medium_added_cb (RBRemovableMediaManager *mgr,
 }
 
 static void
-rb_shell_transfer_progress_cb (RBRemovableMediaManager *mgr,
-			       gint done,
-			       gint total,
-			       double fraction,
-			       RBShell *shell)
-{
-	rb_debug ("transferred %d tracks out of %d", done, total);
-
-	if (total > 0) {
-		char *s;
-
-		if (fraction >= 0)
-			s = g_strdup_printf (_("Transferring track %d out of %d (%.0f%%)"),
-						   done + 1, total, fraction * 100);
-		else
-			s = g_strdup_printf (_("Transferring track %d out of %d"),
-						   done + 1, total);
-
-		rb_statusbar_set_progress (shell->priv->statusbar,
-					   (((double)(done) + fraction)/total),
-					   s);
-		g_free (s);
-	} else {
-		rb_statusbar_set_progress (shell->priv->statusbar, -1, NULL);
-	}
-}
-
-static void
 rb_shell_source_deleted_cb (RBSource *source,
 			    RBShell *shell)
 {
-	RhythmDBEntryType entry_type;
+	RhythmDBEntryType *entry_type;
 
 	rb_debug ("source deleted");
 
@@ -1816,10 +2072,11 @@ rb_shell_source_deleted_cb (RBSource *source,
 	if (rb_shell_get_source_by_entry_type (shell, entry_type) == source) {
 		g_hash_table_remove (shell->priv->sources_hash, entry_type);
 	}
-	g_boxed_free (RHYTHMDB_TYPE_ENTRY_TYPE, entry_type);
+	g_object_unref (entry_type);
 
 
-	if (source == rb_shell_player_get_playing_source (shell->priv->player_shell)) {
+	if (source == rb_shell_player_get_playing_source (shell->priv->player_shell) ||
+	    source == rb_shell_player_get_active_source (shell->priv->player_shell)) {
 		rb_shell_player_stop (shell->priv->player_shell);
 	}
 	if (source == shell->priv->selected_source) {
@@ -1863,7 +2120,7 @@ rb_shell_playing_from_queue_cb (RBShellPlayer *player,
 	} else {
 		RBSource *source;
 		RhythmDBEntry *entry;
-		RhythmDBEntryType entry_type;
+		RhythmDBEntryType *entry_type;
 
 		/* if playing from the queue, show the playing entry as playing in the
 		 * registered source for its type, so it makes sense when 'jump to current'
@@ -1880,9 +2137,10 @@ rb_shell_playing_from_queue_cb (RBShellPlayer *player,
 			RBEntryView *songs;
 
 			songs = rb_source_get_entry_view (source);
-
-			state = from_queue ? RB_ENTRY_VIEW_PLAYING : RB_ENTRY_VIEW_NOT_PLAYING;
-			rb_entry_view_set_state (songs, state);
+			if (songs != NULL) {
+				state = from_queue ? RB_ENTRY_VIEW_PLAYING : RB_ENTRY_VIEW_NOT_PLAYING;
+				rb_entry_view_set_state (songs, state);
+			}
 		}
 		rhythmdb_entry_unref (entry);
 
@@ -2142,6 +2400,12 @@ rb_shell_cmd_about (GtkAction *action,
 	g_free (license_trans);
 }
 
+/**
+ * rb_shell_toggle_visibility:
+ * @shell: the #RBShell
+ *
+ * Toggles the visibility of the main Rhythmbox window.
+ */
 void
 rb_shell_toggle_visibility (RBShell *shell)
 {
@@ -2181,15 +2445,12 @@ static void
 rb_shell_cmd_preferences (GtkAction *action,
 		          RBShell *shell)
 {
-	if (shell->priv->prefs == NULL) {
-		shell->priv->prefs = rb_shell_preferences_new (shell->priv->sources);
+	RBShellPreferences *prefs;
 
-		gtk_window_set_transient_for (GTK_WINDOW (shell->priv->prefs),
-					      GTK_WINDOW (shell->priv->window));
-		gtk_widget_show_all (shell->priv->prefs);
-	}
+	g_object_get (shell, "prefs", &prefs, NULL);
 
-	gtk_window_present (GTK_WINDOW (shell->priv->prefs));
+	gtk_window_present (GTK_WINDOW (prefs));
+	g_object_unref (prefs);
 }
 
 static gboolean
@@ -2228,7 +2489,6 @@ rb_shell_cmd_plugins (GtkAction *action,
 		content_area = gtk_dialog_get_content_area (GTK_DIALOG (shell->priv->plugins));
 	    	gtk_container_set_border_width (GTK_CONTAINER (shell->priv->plugins), 5);
 		gtk_box_set_spacing (GTK_BOX (content_area), 2);
-		gtk_dialog_set_has_separator (GTK_DIALOG (shell->priv->plugins), FALSE);
 
 		g_signal_connect_object (G_OBJECT (shell->priv->plugins),
 					 "delete_event",
@@ -2338,6 +2598,17 @@ quit_timeout (gpointer dummy)
 	return FALSE;
 }
 
+/**
+ * rb_shell_quit:
+ * @shell: the #RBShell
+ * @error: not used
+ *
+ * Begins the process of shutting down Rhythmbox.  This function will
+ * return.  The error parameter and return value only exist because this
+ * function is part of the DBus interface.
+ *
+ * Return value: not important
+ */
 gboolean
 rb_shell_quit (RBShell *shell,
 	       GError **error)
@@ -2349,7 +2620,7 @@ rb_shell_quit (RBShell *shell,
 
 	rb_plugins_engine_shutdown ();
 
-	rb_podcast_source_shutdown (shell->priv->podcast_source);
+	rb_podcast_manager_shutdown (shell->priv->podcast_manager);
 
 	rb_shell_shutdown (shell);
 	rb_shell_sync_state (shell);
@@ -2369,6 +2640,8 @@ idle_handle_load_complete (RBShell *shell)
 	rb_playlist_manager_load_playlists (shell->priv->playlist_manager);
 	shell->priv->load_complete = TRUE;
 	shell->priv->save_playlist_id = g_timeout_add_seconds (10, (GSourceFunc) idle_save_playlist_manager, shell);
+
+	g_signal_emit (shell, rb_shell_signals[DATABASE_LOAD_COMPLETE], 0);
 
 	rhythmdb_start_action_thread (shell->priv->db);
 
@@ -2470,7 +2743,7 @@ rb_shell_sync_toolbar_state (RBShell *shell)
 		gtk_toolbar_set_style (GTK_TOOLBAR (toolbar), GTK_TOOLBAR_ICONS);
 		break;
 	case 4:
-		/* test only */
+		/* text only */
 		gtk_toolbar_set_style (GTK_TOOLBAR (toolbar), GTK_TOOLBAR_TEXT);
 		break;
 	default:
@@ -2584,10 +2857,16 @@ rb_shell_sync_smalldisplay (RBShell *shell)
 static void
 rb_shell_sync_statusbar_visibility (RBShell *shell)
 {
-	if (shell->priv->statusbar_hidden || shell->priv->window_small)
-		gtk_widget_hide (GTK_WIDGET (shell->priv->statusbar));
-	else
-		gtk_widget_show (GTK_WIDGET (shell->priv->statusbar));
+	gboolean visible;
+	GtkAction *action;
+
+	visible = !shell->priv->statusbar_hidden;
+
+	action = gtk_action_group_get_action (shell->priv->actiongroup, "ViewStatusbar");
+	gtk_toggle_action_set_active (GTK_TOGGLE_ACTION (action), visible);
+
+	gtk_widget_set_visible (GTK_WIDGET (shell->priv->statusbar),
+				visible && !shell->priv->window_small);
 }
 
 static void
@@ -2704,7 +2983,7 @@ rb_shell_jump_to_entry_with_source (RBShell *shell,
 	if ((source == RB_SOURCE (shell->priv->queue_source) &&
 	     shell->priv->queue_as_sidebar) ||
 	     source == NULL) {
-		RhythmDBEntryType entry_type;
+		RhythmDBEntryType *entry_type;
 		entry_type = rhythmdb_entry_get_entry_type (entry);
 		source = rb_shell_get_source_by_entry_type (shell, entry_type);
 	}
@@ -2714,8 +2993,10 @@ rb_shell_jump_to_entry_with_source (RBShell *shell,
 	songs = rb_source_get_entry_view (source);
 	rb_shell_select_source (shell, source);
 
-	rb_entry_view_scroll_to_entry (songs, entry);
-	rb_entry_view_select_entry (songs, entry);
+	if (songs != NULL) {
+		rb_entry_view_scroll_to_entry (songs, entry);
+		rb_entry_view_select_entry (songs, entry);
+	}
 }
 
 static void
@@ -2757,12 +3038,22 @@ rb_shell_notify_custom (RBShell *shell,
 			guint timeout,
 			const char *primary,
 			const char *secondary,
-			GdkPixbuf *pixbuf,
+			const char *image_uri,
 			gboolean requested)
 {
-	g_signal_emit (shell, rb_shell_signals[NOTIFY_CUSTOM], 0, timeout, primary, secondary, pixbuf, requested);
+	g_signal_emit (shell, rb_shell_signals[NOTIFY_CUSTOM], 0, timeout, primary, secondary, image_uri, requested);
 }
 
+/**
+ * rb_shell_do_notify:
+ * @shell: the #RBShell
+ * @requested: if %TRUE, the notification was requested by some explicit user action
+ * @error: not used
+ *
+ * Displays a notification of the current playing track.
+ *
+ * Return value: not important
+ */
 gboolean
 rb_shell_do_notify (RBShell *shell, gboolean requested, GError **error)
 {
@@ -2770,6 +3061,13 @@ rb_shell_do_notify (RBShell *shell, gboolean requested, GError **error)
 	return TRUE;
 }
 
+/**
+ * rb_shell_error_quark:
+ *
+ * Returns the #GQuark used for #RBShell errors
+ *
+ * Return value: shell error #GQuark
+ */
 GQuark
 rb_shell_error_quark (void)
 {
@@ -2807,6 +3105,17 @@ rb_shell_session_init (RBShell *shell)
 	g_signal_connect (sm_client, "quit", G_CALLBACK (session_quit_cb), shell);
 }
 
+/**
+ * rb_shell_guess_source_for_uri:
+ * @shell: the #RBSource
+ * @uri: the URI to guess a source for
+ *
+ * Attempts to locate the source that should handle the specified URI.
+ * This iterates through all sources, calling #rb_source_want_uri,
+ * returning the source that returns the highest value.
+ *
+ * Return value: the most appropriate #RBSource for the uri
+ */
 RBSource *
 rb_shell_guess_source_for_uri (RBShell *shell,
 			       const char *uri)
@@ -2823,7 +3132,7 @@ rb_shell_guess_source_for_uri (RBShell *shell,
 		s = rb_source_want_uri (source, uri);
 		if (s > strength) {
 			gchar *name;
-			
+
 			g_object_get (source, "name", &name, NULL);
 			rb_debug ("source %s returned strength %u for uri %s",
 				  name, s, uri);
@@ -2839,6 +3148,20 @@ rb_shell_guess_source_for_uri (RBShell *shell,
 
 /* Load a URI representing an element of the given type, with
  * optional metadata
+ */
+/**
+ * rb_shell_add_uri:
+ * @shell: the #RBShell
+ * @uri: the URI to add
+ * @title: optional title value for the URI
+ * @genre: optional genre value for the URI
+ * @error: returns error information
+ *
+ * Adds the specified URI to the Rhythmbox database.  Whether the
+ * title and genre specified are actually used is up to the source
+ * that handles the URI
+ *
+ * Return value: TRUE if the URI was added successfully
  */
 gboolean
 rb_shell_add_uri (RBShell *shell,
@@ -2859,12 +3182,14 @@ rb_shell_add_uri (RBShell *shell,
 		return FALSE;
 	}
 
-	rb_source_add_uri (source, uri, title, genre);
+	rb_source_add_uri (source, uri, title, genre, NULL, NULL, NULL);
 	return TRUE;
 }
 
 typedef struct {
 	RBShell *shell;
+	char *uri;
+	gboolean play;
 	RBSource *playlist_source;
 	gboolean can_use_playlist;
 	gboolean source_is_entry;
@@ -2898,11 +3223,143 @@ handle_playlist_entry_cb (TotemPlParser *playlist,
 		g_object_unref (data->playlist_source);
 		data->playlist_source = NULL;
 		data->can_use_playlist = FALSE;
+		data->source_is_entry = FALSE;
 	}
 }
 
-/* Load a URI representing a single song, a directory, a playlist, or
- * an internet radio station, and optionally start playing it.
+static void
+shell_load_uri_done (RBSource *source, const char *uri, RBShell *shell)
+{
+	RhythmDBEntry *entry;
+
+	entry = rhythmdb_entry_lookup_by_location (shell->priv->db, uri);
+	if (entry) {
+		rb_shell_play_entry (shell, entry);
+	} else {
+		rb_debug ("unable to find entry for uri %s", uri);
+	}
+}
+
+static void
+load_uri_finish (RBShell *shell, RBSource *entry_source, RhythmDBEntry *entry, gboolean play)
+{
+	if (play == FALSE) {
+		rb_debug ("didn't want to do anything anyway");
+	} else if (entry != NULL) {
+		rb_debug ("found an entry to play");
+		rb_shell_play_entry (shell, entry);
+	} else if (entry_source != NULL) {
+		char *name;
+		GError *error = NULL;
+
+		g_object_get (entry_source, "name", &name, NULL);
+		/* play type 2: we don't have an entry to play, so just play something */
+		if (rb_shell_activate_source (shell, entry_source, 2, &error) == FALSE) {
+			rb_debug ("couldn't activate source %s: %s", name, error->message);
+			g_clear_error (&error);
+		} else {
+			rb_debug ("activated source '%s'", name);
+		}
+		g_free (name);
+	} else {
+		rb_debug ("couldn't do anything");
+	}
+}
+
+static void
+load_uri_parser_finished_cb (GObject *parser, GAsyncResult *res, PlaylistParseData *data)
+{
+	TotemPlParserResult result;
+	RBSource *entry_source = NULL;
+	GError *error = NULL;
+
+	result = totem_pl_parser_parse_finish (TOTEM_PL_PARSER (parser), res, &error);
+	g_object_unref (parser);
+
+	if (error != NULL) {
+		rb_debug ("parsing %s as a playlist failed: %s", data->uri, error->message);
+		g_clear_error (&error);
+	} else if (result == TOTEM_PL_PARSER_RESULT_UNHANDLED) {
+		rb_debug ("%s unhandled", data->uri);
+	} else if (result == TOTEM_PL_PARSER_RESULT_IGNORED) {
+		rb_debug ("%s ignored", data->uri);
+	}
+
+	if (result == TOTEM_PL_PARSER_RESULT_SUCCESS) {
+
+		if (data->can_use_playlist && data->playlist_source) {
+			rb_debug ("adding playlist %s to source", data->uri);
+			rb_source_add_uri (data->playlist_source, data->uri, NULL, NULL, NULL, NULL, NULL);
+
+			/* FIXME: We need some way to determine whether the URI as
+			 * given will appear in the db, or whether something else will.
+			 * This hack assumes we'll never add local playlists to the db
+			 * directly.
+			 */
+			if (rb_uri_is_local (data->uri) && (data->source_is_entry == FALSE)) {
+				data->play = FALSE;
+			}
+
+			if (data->source_is_entry != FALSE) {
+				entry_source = data->playlist_source;
+			}
+		} else {
+			rb_debug ("adding %s as a static playlist", data->uri);
+			if (!rb_playlist_manager_parse_file (data->shell->priv->playlist_manager,
+							     data->uri,
+							     &error)) {
+				rb_debug ("unable to parse %s as a static playlist: %s", data->uri, error->message);
+				g_clear_error (&error);
+			}
+			data->play = FALSE;		/* maybe we should play the new playlist? */
+		}
+	} else {
+		RBSource *source;
+
+		source = rb_shell_guess_source_for_uri (data->shell, data->uri);
+		if (source != NULL) {
+			char *name;
+			g_object_get (source, "name", &name, NULL);
+			if (rb_source_uri_is_source (source, data->uri)) {
+				rb_debug ("%s identifies source %s", data->uri, name);
+				entry_source = source;
+			} else if (data->play) {
+				rb_debug ("adding %s to source %s, will play it when it shows up", data->uri, name);
+				rb_source_add_uri (source, data->uri, NULL, NULL, (RBSourceAddCallback) shell_load_uri_done, g_object_ref (data->shell), g_object_unref);
+				data->play = FALSE;
+			} else {
+				rb_debug ("just adding %s to source %s", data->uri, name);
+				rb_source_add_uri (source, data->uri, NULL, NULL, NULL, NULL, NULL);
+			}
+			g_free (name);
+		} else {
+			rb_debug ("couldn't find a source for %s, trying to add it anyway", data->uri);
+			if (!rb_shell_add_uri (data->shell, data->uri, NULL, NULL, &error)) {
+				rb_debug ("couldn't do it: %s", error->message);
+				g_clear_error (&error);
+			}
+		}
+	}
+
+	load_uri_finish (data->shell, entry_source, NULL, data->play);
+
+	if (data->playlist_source != NULL) {
+		g_object_unref (data->playlist_source);
+	}
+	g_object_unref (data->shell);
+	g_free (data->uri);
+	g_free (data);
+}
+
+/**
+ * rb_shell_load_uri:
+ * @shell: the #RBShell
+ * @uri: the URI to load
+ * @play: if TRUE, start playing the URI (if possible)
+ * @error: returns error information
+ *
+ * Loads a URI representing a single song, a directory, a playlist, or
+ * an internet radio station, and optionally starts playing it.
  *
  * For playlists containing only stream URLs, we either add the playlist
  * itself (if it's remote) or each URL from it (if it's local).  The main
@@ -2910,6 +3367,8 @@ handle_playlist_entry_cb (TotemPlParser *playlist,
  * works properly - the playlist file will be downloaded to /tmp/, and
  * we can't add that to the database, so we need to add the stream URLs
  * instead.
+ *
+ * Return value: TRUE if the URI was added successfully
  */
 gboolean
 rb_shell_load_uri (RBShell *shell,
@@ -2918,161 +3377,185 @@ rb_shell_load_uri (RBShell *shell,
 		   GError **error)
 {
 	RhythmDBEntry *entry;
-	RBSource *playlist_source;
-
-	entry = rhythmdb_entry_lookup_by_location (shell->priv->db, uri);
-	playlist_source = NULL;
 
 	/* If the URI points to a Podcast, pass it on to
 	 * the Podcast source */
 	if (rb_uri_could_be_podcast (uri, NULL)) {
-		rb_podcast_source_add_feed (shell->priv->podcast_source, uri);
+		rb_podcast_manager_subscribe_feed (shell->priv->podcast_manager, uri, FALSE);
 		rb_shell_select_source (shell, RB_SOURCE (shell->priv->podcast_source));
 		return TRUE;
 	}
 
+	entry = rhythmdb_entry_lookup_by_location (shell->priv->db, uri);
+
 	if (entry == NULL) {
 		TotemPlParser *parser;
-		TotemPlParserResult result;
-		PlaylistParseData data;
+		PlaylistParseData *data;
 
-		data.shell = shell;
-		data.can_use_playlist = TRUE;
-		data.source_is_entry = FALSE;
-		data.playlist_source = NULL;
+		data = g_new0 (PlaylistParseData, 1);
+		data->shell = g_object_ref (shell);
+		data->uri = g_strdup (uri);
+		data->play = play;
+		data->can_use_playlist = TRUE;
+		data->source_is_entry = FALSE;
+		data->playlist_source = NULL;
 
 		rb_debug ("adding uri %s, play %d", uri, play);
 		parser = totem_pl_parser_new ();
 
-		g_signal_connect_data (G_OBJECT (parser), "entry-parsed",
+		g_signal_connect_data (parser, "entry-parsed",
 				       G_CALLBACK (handle_playlist_entry_cb),
-				       &data, NULL, 0);
+				       data, NULL, 0);
 
 		totem_pl_parser_add_ignored_mimetype (parser, "x-directory/normal");
 		totem_pl_parser_add_ignored_mimetype (parser, "inode/directory");
 		totem_pl_parser_add_ignored_scheme (parser, "cdda");
-		g_object_set (G_OBJECT (parser), "recurse", FALSE, NULL);
-
-		result = totem_pl_parser_parse (parser, uri, FALSE);
-		g_object_unref (parser);
-
-		if (result == TOTEM_PL_PARSER_RESULT_SUCCESS) {
-			if (data.can_use_playlist && data.playlist_source) {
-				rb_debug ("adding playlist %s to source", uri);
-				rb_source_add_uri (data.playlist_source, uri, NULL, NULL);
-
-				/* FIXME: We need some way to determine whether the URI as
-				 * given will appear in the db, or whether something else will.
-				 * This hack assumes we'll never add local playlists to the db
-				 * directly.
-				 */
-				if (rb_uri_is_local (uri) && (data.source_is_entry == FALSE)) {
-					play = FALSE;
-				}
-			} else {
-				rb_debug ("adding %s as a static playlist", uri);
-				if (!rb_playlist_manager_parse_file (shell->priv->playlist_manager,
-								     uri, error))
-					return FALSE;
-			}
-		} else if ((result == TOTEM_PL_PARSER_RESULT_IGNORED && rb_uri_is_local (uri))
-			   || result == TOTEM_PL_PARSER_RESULT_UNHANDLED) {
-			/* That happens for directories and unhandled schemes, such as CDDA */
-			playlist_source = rb_shell_guess_source_for_uri (shell, uri);
-			if (playlist_source == NULL || rb_source_uri_is_source (playlist_source, uri) == FALSE) {
-				rb_debug ("%s doesn't have a source, adding", uri);
-				if (!rb_shell_add_uri (shell, uri, NULL, NULL, error))
-					return FALSE;
-			}
-		} else {
-			rb_debug ("%s didn't parse as a playlist", uri);
-			if (!rb_shell_add_uri (shell, uri, NULL, NULL, error))
-				return FALSE;
+		g_object_set (parser, "recurse", FALSE, NULL);
+		if (rb_debug_matches ("totem_pl_parser_parse_async", "totem-pl-parser.c")) {
+			g_object_set (parser, "debug", TRUE, NULL);
 		}
 
-		if (data.source_is_entry != FALSE) {
-			playlist_source = data.playlist_source;
-		} else if (data.playlist_source != NULL) {
-			g_object_unref (data.playlist_source);
-		}
-	}
-
-	if (play) {
-		if (playlist_source != NULL) {
-			char *name;
-
-			rb_shell_activate_source (shell, playlist_source);
-
-			g_object_get (playlist_source, "name", &name, NULL);
-			rb_debug ("Activated source '%s' for uri %s", name, uri);
-			g_free (name);
-
-			return TRUE;
-		}
-
-		if (entry == NULL)
-			entry = rhythmdb_entry_lookup_by_location (shell->priv->db, uri);
-
-		if (entry) {
-			rb_shell_play_entry (shell, entry);
-		} else {
-			/* wait for the entry to be added, and then play it */
-			if (shell->priv->pending_entry)
-				g_free (shell->priv->pending_entry);
-
-			shell->priv->pending_entry = g_strdup (uri);
-		}
+		totem_pl_parser_parse_async (parser, uri, FALSE, NULL, (GAsyncReadyCallback)load_uri_parser_finished_cb, data);
+	} else {
+		load_uri_finish (shell, NULL, entry, play);
 	}
 
 	return TRUE;
 }
 
+/**
+ * rb_shell_get_party_mode:
+ * @shell: the #RBShell
+ *
+ * Returns %TRUE if the shell is in party mode
+ *
+ * Return value: %TRUE if the shell is in party mode
+ */
 gboolean
 rb_shell_get_party_mode (RBShell *shell)
 {
 	return shell->priv->party_mode;
 }
 
+/**
+ * rb_shell_get_player:
+ * @shell: the #RBShell
+ *
+ * Returns the #RBShellPlayer object
+ *
+ * Return value: the #RBShellPlayer object
+ */
 GObject *
 rb_shell_get_player (RBShell *shell)
 {
 	return G_OBJECT (shell->priv->player_shell);
 }
 
+/**
+ * rb_shell_get_player_path:
+ * @shell: the #RBShell
+ *
+ * Returns the DBus object path for the #RBShellPlayer
+ *
+ * Return value: the DBus object path for the #RBShellPlayer
+ */
 const char *
 rb_shell_get_player_path (RBShell *shell)
 {
 	return "/org/gnome/Rhythmbox/Player";
 }
 
+/**
+ * rb_shell_get_playlist_manager:
+ * @shell: the #RBShell
+ *
+ * Returns the #RBPlaylistManager object
+ *
+ * Return value: the #RBPlaylistManager object
+ */
 GObject *
 rb_shell_get_playlist_manager (RBShell *shell)
 {
 	return G_OBJECT (shell->priv->playlist_manager);
 }
 
+/**
+ * rb_shell_get_playlist_manager_path:
+ * @shell: the #RBShell
+ *
+ * Returns the DBus path for the #RBPlaylistManager object
+ *
+ * Return value: the DBus object path for the #RBPlaylistManager
+ */
 const char *
 rb_shell_get_playlist_manager_path (RBShell *shell)
 {
 	return "/org/gnome/Rhythmbox/PlaylistManager";
 }
 
+/**
+ * rb_shell_get_ui_manager:
+ * @shell: the #RBShell
+ *
+ * Returns the main #GtkUIManager object
+ *
+ * Return value: the main #GtkUIManager object
+ */
 GObject *
 rb_shell_get_ui_manager (RBShell *shell)
 {
 	return G_OBJECT (shell->priv->ui_manager);
 }
 
+/**
+ * rb_shell_add_to_queue:
+ * @shell: the #RBShell
+ * @uri: the URI to add to the play queue
+ * @error: not used
+ *
+ * Adds the specified URI to the play queue.  This only works if URI is already
+ * in the database.
+ *
+ * Return value: not used
+ */
 gboolean
 rb_shell_add_to_queue (RBShell *shell,
 		       const gchar *uri,
 		       GError **error)
 {
+	RhythmDBEntry *entry;
+
+	entry = rhythmdb_entry_lookup_by_location (shell->priv->db, uri);
+	if (entry == NULL) {
+		RBSource *source;
+		source = rb_shell_guess_source_for_uri (shell, uri);
+		if (source != NULL) {
+			rb_source_add_uri (source, uri, NULL, NULL, NULL, NULL, NULL);
+		} else {
+			g_set_error (error,
+				     RB_SHELL_ERROR,
+				     RB_SHELL_ERROR_NO_SOURCE_FOR_URI,
+				     _("No registered source can handle URI %s"),
+				     uri);
+			return FALSE;
+		}
+	}
 	rb_static_playlist_source_add_location (RB_STATIC_PLAYLIST_SOURCE (shell->priv->queue_source),
 						uri, -1);
 	return TRUE;
 }
 
+/**
+ * rb_shell_remove_from_queue:
+ * @shell: the #RBShell
+ * @uri: the URI to remove from the play queue
+ * @error: not used
+ *
+ * Removes the specified URI from the play queue.  If the URI is not
+ * in the play queue, nothing happens.
+ *
+ * Return value: not used.
+ */
 gboolean
 rb_shell_remove_from_queue (RBShell *shell,
 			    const gchar *uri,
@@ -3084,6 +3567,15 @@ rb_shell_remove_from_queue (RBShell *shell,
 	return TRUE;
 }
 
+/**
+ * rb_shell_clear_queue:
+ * @shell: the #RBShell
+ * @error: not used
+ *
+ * Removes all entries from the play queue.
+ *
+ * Return value: not used
+ */
 gboolean
 rb_shell_clear_queue (RBShell *shell,
 		      GError **error)
@@ -3092,6 +3584,16 @@ rb_shell_clear_queue (RBShell *shell,
 	return TRUE;
 }
 
+/**
+ * rb_shell_present:
+ * @shell: the #RBShell
+ * @timestamp: GTK timestamp to use (for focus-stealing prevention)
+ * @error: not used
+ *
+ * Attempts to display the main window to the user.  See #gtk_window_present for details.
+ *
+ * Return value: not used.
+ */
 gboolean
 rb_shell_present (RBShell *shell,
 		  guint32 timestamp,
@@ -3109,6 +3611,68 @@ rb_shell_present (RBShell *shell,
 	return TRUE;
 }
 
+/**
+ * rb_shell_activate_source_by_uri:
+ * @shell: the #RBShell
+ * @source_uri: URI for the source to activate
+ * @play: 0: select source, 1: play source if not playing, 2: play source
+ * @error: returns error information
+ *
+ * Searches for a source matching @source_uri and if found, selects it,
+ * and depending on the value of @play, may start playing from it.
+ * Device-based sources will match the device node or mount point URI.
+ * Other types of sources may have their own URI scheme or format.
+ * This is part of the DBus interface.
+ *
+ * Return value: %TRUE if successful
+ */
+gboolean
+rb_shell_activate_source_by_uri (RBShell *shell,
+				 const char *source_uri,
+				 guint play,
+				 GError **error)
+{
+	GList *t;
+	GFile *f;
+	char *uri;
+
+	/* ensure the argument is actually a URI */
+	f = g_file_new_for_commandline_arg (source_uri);
+	uri = g_file_get_uri (f);
+	g_object_unref (f);
+
+	for (t = shell->priv->sources; t != NULL; t = t->next) {
+		RBSource *source;
+
+		source = (RBSource *)t->data;
+		if (rb_source_uri_is_source (source, uri)) {
+			rb_debug ("found source for uri %s", uri);
+			g_free (uri);
+			return rb_shell_activate_source (shell, source, play, error);
+		}
+	}
+
+	g_set_error (error,
+		     RB_SHELL_ERROR,
+		     RB_SHELL_ERROR_NO_SOURCE_FOR_URI,
+		     _("No registered source matches URI %s"),
+		     uri);
+	g_free (uri);
+	return FALSE;
+}
+
+/**
+ * rb_shell_get_song_properties:
+ * @shell: the #RBShell
+ * @uri: the URI to query
+ * @properties: returns the properties of the specified URI
+ * @error: returns error information
+ *
+ * Gathers and returns all metadata (including extra metadata such as album
+ * art URIs and lyrics) for the specified URI.
+ *
+ * Return value: %TRUE if the URI is found in the database
+ */
 gboolean
 rb_shell_get_song_properties (RBShell *shell,
 			      const char *uri,
@@ -3136,6 +3700,20 @@ rb_shell_get_song_properties (RBShell *shell,
 	return (*properties != NULL);
 }
 
+/**
+ * rb_shell_set_song_property:
+ * @shell: the #RBShell
+ * @uri: the URI to modify
+ * @propname: the name of the property to modify
+ * @value: the new value to set
+ * @error: returns error information
+ *
+ * Attempts to set a property of a database entry identified by its URI.
+ * If the URI identifies a file and the property is one associated with a
+ * file metadata tag, the new value will be written to the file.
+ *
+ * Return value: %TRUE if the property was set successfully.
+ */
 gboolean
 rb_shell_set_song_property (RBShell *shell,
 			    const char *uri,
@@ -3187,6 +3765,7 @@ rb_shell_set_song_property (RBShell *shell,
 	} else {
 		rhythmdb_entry_set (shell->priv->db, entry, propid, value);
 	}
+	rhythmdb_commit (shell->priv->db);
 	return TRUE;
 }
 
@@ -3239,6 +3818,17 @@ rb_shell_get_box_for_ui_location (RBShell *shell, RBShellUILocation location)
 	return box;
 }
 
+/**
+ * rb_shell_add_widget:
+ * @shell: the #RBShell
+ * @widget: the #GtkWidget to insert into the main window
+ * @location: the location at which to insert the widget
+ * @expand: whether the widget should be given extra space
+ * @fill: whether the widget should fill all space allocated to it
+ *
+ * Adds a widget to the main Rhythmbox window.  See #gtk_box_pack_start for
+ * details on how the expand and fill parameters work.
+ */
 void
 rb_shell_add_widget (RBShell *shell, GtkWidget *widget, RBShellUILocation location, gboolean expand, gboolean fill)
 {
@@ -3263,6 +3853,14 @@ rb_shell_add_widget (RBShell *shell, GtkWidget *widget, RBShellUILocation locati
 	}
 }
 
+/**
+ * rb_shell_remove_widget:
+ * @shell: the #RBShell
+ * @widget: the #GtkWidget to remove from the main window
+ * @location: the UI location to which the widget was originally added
+ *
+ * Removes a widget added with #rb_shell_add_widget from the main window.
+ */
 void
 rb_shell_remove_widget (RBShell *shell, GtkWidget *widget, RBShellUILocation location)
 {
@@ -3290,6 +3888,14 @@ rb_shell_remove_widget (RBShell *shell, GtkWidget *widget, RBShellUILocation loc
 	}
 }
 
+/**
+ * rb_shell_notebook_set_page:
+ * @shell: the #RBShell
+ * @widget: #GtkWidget for the page to display
+ *
+ * Changes the visible page in the main window notebook widget.  Use this to
+ * display widgets added to the #RB_SHELL_UI_LOCATION_MAIN_NOTEBOOK location.
+ */
 void
 rb_shell_notebook_set_page (RBShell *shell, GtkWidget *widget)
 {
@@ -3323,15 +3929,35 @@ rb_shell_ui_location_get_type (void)
 
 	if (etype == 0)	{
 		static const GEnumValue values[] = {
-			ENUM_ENTRY (RB_SHELL_UI_LOCATION_SIDEBAR, "Sidebar"),
-			ENUM_ENTRY (RB_SHELL_UI_LOCATION_RIGHT_SIDEBAR, "Right Sidebar"),
-			ENUM_ENTRY (RB_SHELL_UI_LOCATION_MAIN_TOP, "Main Top"),
-			ENUM_ENTRY (RB_SHELL_UI_LOCATION_MAIN_BOTTOM, "Main Bottom"),
-			ENUM_ENTRY (RB_SHELL_UI_LOCATION_MAIN_NOTEBOOK, "Main Notebook"),
+			ENUM_ENTRY (RB_SHELL_UI_LOCATION_SIDEBAR, "sidebar"),
+			ENUM_ENTRY (RB_SHELL_UI_LOCATION_RIGHT_SIDEBAR, "right-sidebar"),
+			ENUM_ENTRY (RB_SHELL_UI_LOCATION_MAIN_TOP, "main-top"),
+			ENUM_ENTRY (RB_SHELL_UI_LOCATION_MAIN_BOTTOM, "main-bottom"),
+			ENUM_ENTRY (RB_SHELL_UI_LOCATION_MAIN_NOTEBOOK, "main-notebook"),
 			{ 0, 0, 0 }
 		};
 
 		etype = g_enum_register_static ("RBShellUILocation", values);
+	}
+
+	return etype;
+}
+
+GType
+rb_shell_error_get_type (void)
+{
+	static GType etype = 0;
+
+	if (etype == 0) {
+		static const GEnumValue values[] = {
+			ENUM_ENTRY(RB_SHELL_ERROR_NO_SUCH_URI, "no-such-uri"),
+			ENUM_ENTRY(RB_SHELL_ERROR_NO_SUCH_PROPERTY, "no-such-property"),
+			ENUM_ENTRY(RB_SHELL_ERROR_IMMUTABLE_PROPERTY, "immutable-property"),
+			ENUM_ENTRY(RB_SHELL_ERROR_INVALID_PROPERTY_TYPE, "invalid-property-type"),
+			ENUM_ENTRY(RB_SHELL_ERROR_NO_SOURCE_FOR_URI, "no-source-for-uri"),
+			{ 0, 0, 0 }
+		};
+		etype = g_enum_register_static ("RBShellErrorType", values);
 	}
 
 	return etype;

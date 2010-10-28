@@ -145,7 +145,7 @@ rb_missing_files_source_constructed (GObject *object)
 	RBShell *shell;
 	GPtrArray *query;
 	RhythmDBQueryModel *model;
-	RhythmDBEntryType entry_type;
+	RhythmDBEntryType *entry_type;
 
 	RB_CHAIN_GOBJECT_METHOD (rb_missing_files_source_parent_class, constructed, object);
 	source = RB_MISSING_FILES_SOURCE (object);
@@ -167,7 +167,7 @@ rb_missing_files_source_constructed (GObject *object)
 				      	RHYTHMDB_PROP_HIDDEN,
 					TRUE,
 				      RHYTHMDB_QUERY_END);
-	g_boxed_free (RHYTHMDB_TYPE_ENTRY_TYPE, entry_type);
+	g_object_unref (entry_type);
 
 	model = rhythmdb_query_model_new (source->priv->db, query,
 					  NULL, NULL, NULL, FALSE);
@@ -267,14 +267,14 @@ rb_missing_files_source_get_property (GObject *object,
  * it would be trivial to make it use any source type
  * that did file access checks for its contents.
  * 
- * Return value: the #RBMissingFiles source
+ * Return value: the #RBMissingFilesSource
  */
 RBSource *
 rb_missing_files_source_new (RBShell *shell,
 			     RBLibrarySource *library)
 {
 	RBSource *source;
-	RhythmDBEntryType entry_type;
+	RhythmDBEntryType *entry_type;
 
 	g_object_get (library, "entry-type", &entry_type, NULL);
 	source = RB_SOURCE (g_object_new (RB_TYPE_MISSING_FILES_SOURCE,
@@ -285,7 +285,7 @@ rb_missing_files_source_new (RBShell *shell,
 					  "hidden-when-empty", TRUE,
 					  "source-group", RB_SOURCE_GROUP_LIBRARY,
 					  NULL));
-	g_boxed_free (RHYTHMDB_TYPE_ENTRY_TYPE, entry_type);
+	g_object_unref (entry_type);
 	return source;
 }
 

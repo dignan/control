@@ -35,6 +35,7 @@ G_BEGIN_DECLS
 
 #include "rb-shell-player.h"
 #include "rb-plugin.h"
+#include "rb-audioscrobbler-service.h"
 
 #define RB_TYPE_AUDIOSCROBBLER			(rb_audioscrobbler_get_type ())
 #define RB_AUDIOSCROBBLER(o)			(G_TYPE_CHECK_INSTANCE_CAST ((o), RB_TYPE_AUDIOSCROBBLER, RBAudioscrobbler))
@@ -56,28 +57,25 @@ typedef struct
 typedef struct
 {
 	GObjectClass parent_class;
+
+	/* signals */
+	void (*authentication_error) (RBAudioscrobbler *audioscrobbler);
+	void (*statistics_changed) (RBAudioscrobbler *audioscrobbler,
+	                            const char *status_msg,
+	                            guint queue_count,
+	                            guint submit_count,
+	                            const char *submit_time);
 } RBAudioscrobblerClass;
 
 
 GType			rb_audioscrobbler_get_type (void);
 
-RBAudioscrobbler *	rb_audioscrobbler_new (RBShellPlayer *shell_player);
+RBAudioscrobbler *	rb_audioscrobbler_new (RBAudioscrobblerService *service,
+                                               RBShellPlayer *shell_player,
+                                               const char *username,
+                                               const char *session_key);
 
-GtkWidget *		rb_audioscrobbler_get_config_widget (RBAudioscrobbler *audioscrobbler,
-							     RBPlugin *plugin);
-
-void			rb_audioscrobbler_username_entry_focus_out_event_cb (GtkWidget *widget,
-                                                                             RBAudioscrobbler *audioscrobbler);
-void			rb_audioscrobbler_username_entry_activate_cb (GtkEntry *entry,
-								      RBAudioscrobbler *audioscrobbler);
-
-void			rb_audioscrobbler_password_entry_focus_out_event_cb (GtkWidget *widget,
-								     RBAudioscrobbler *audioscrobbler);
-void			rb_audioscrobbler_password_entry_activate_cb (GtkEntry *entry,
-								      RBAudioscrobbler *audioscrobbler);
-
-void			rb_audioscrobbler_enabled_check_changed_cb (GtkCheckButton *button,
-								    RBAudioscrobbler *audioscrobbler);
+void                    rb_audioscrobbler_statistics_changed (RBAudioscrobbler *audioscrobbler);
 
 
 G_END_DECLS

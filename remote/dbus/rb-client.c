@@ -44,17 +44,19 @@ static gboolean debug = FALSE;
 
 static gboolean no_start = FALSE;
 static gboolean quit = FALSE;
+static gboolean check_running = FALSE;
 
 static gboolean no_present = FALSE;
 static gboolean hide = FALSE;
 
 static gboolean next = FALSE;
 static gboolean previous = FALSE;
+static gint32 seek = 0;
 
 static gboolean notify = FALSE;
 
 static gboolean play = FALSE;
-static gboolean pause = FALSE;
+static gboolean do_pause = FALSE;
 static gboolean play_pause = FALSE;
 static gboolean stop = FALSE;
 
@@ -62,6 +64,9 @@ static gboolean enqueue = FALSE;
 
 static gboolean clear_queue = FALSE;
 
+static gchar *select_source = NULL;
+static gchar *activate_source = NULL;
+static gchar *play_source = NULL;
 static gchar *play_uri = NULL;
 static gboolean print_playing = FALSE;
 static gchar *print_playing_format = NULL;
@@ -81,17 +86,19 @@ static GOptionEntry args[] = {
 
 	{ "no-start", 0, 0, G_OPTION_ARG_NONE, &no_start, N_("Don't start a new instance of Rhythmbox"), NULL },
 	{ "quit", 0, 0, G_OPTION_ARG_NONE, &quit, N_("Quit Rhythmbox"), NULL },
+	{ "check-running", 0, 0, G_OPTION_ARG_NONE, &check_running, N_("Check if Rhythmbox is already running"), NULL },
 
 	{ "no-present", 0, 0, G_OPTION_ARG_NONE, &no_present, N_("Don't present an existing Rhythmbox window"), NULL },
 	{ "hide", 0, 0, G_OPTION_ARG_NONE, &hide, N_("Hide the Rhythmbox window"), NULL },
 
 	{ "next", 0, 0, G_OPTION_ARG_NONE, &next, N_("Jump to next song"), NULL },
 	{ "previous", 0, 0, G_OPTION_ARG_NONE, &previous, N_("Jump to previous song"), NULL },
+	{ "seek", 0, 0, G_OPTION_ARG_INT64, &seek, N_("Seek in current track"), NULL },
 
 	{ "notify", 0, 0, G_OPTION_ARG_NONE, &notify, N_("Show notification of the playing song"), NULL },
 
 	{ "play", 0, 0, G_OPTION_ARG_NONE, &play, N_("Resume playback if currently paused"), NULL },
-	{ "pause", 0, 0, G_OPTION_ARG_NONE, &pause, N_("Pause playback if currently playing"), NULL },
+	{ "pause", 0, 0, G_OPTION_ARG_NONE, &do_pause, N_("Pause playback if currently playing"), NULL },
 	{ "play-pause", 0, 0, G_OPTION_ARG_NONE, &play_pause, N_("Toggle play/pause mode"), NULL },
 /*	{ "stop", 0, 0, G_OPTION_ARG_NONE, &stop, N_("Stop playback"), NULL }, */
 
@@ -101,6 +108,9 @@ static GOptionEntry args[] = {
 
 	{ "print-playing", 0, 0, G_OPTION_ARG_NONE, &print_playing, N_("Print the title and artist of the playing song"), NULL },
 	{ "print-playing-format", 0, 0, G_OPTION_ARG_STRING, &print_playing_format, N_("Print formatted details of the song"), NULL },
+	{ "select-source", 0, 0, G_OPTION_ARG_STRING, &select_source, N_("Select the source matching the specified URI"), N_("Source to select")},
+	{ "activate-source", 0, 0, G_OPTION_ARG_STRING, &activate_source, N_("Activate the source matching the specified URI"), N_("Source to activate")},
+	{ "play-source", 0, 0, G_OPTION_ARG_STRING, &play_source, N_("Play from the source matching the specified URI"), N_("Source to play from")},
 
 	{ "set-volume", 0, 0, G_OPTION_ARG_DOUBLE, &set_volume, N_("Set the playback volume"), NULL },
 	{ "volume-up", 0, 0, G_OPTION_ARG_NONE, &volume_up, N_("Increase the playback volume"), NULL },
@@ -114,6 +124,9 @@ static GOptionEntry args[] = {
 
 	{ NULL }
 };
+
+static gboolean db_load_complete = FALSE;
+static gboolean scan_finished = FALSE;
 
 static gboolean
 annoy (GError **error)
@@ -397,6 +410,8 @@ create_rb_shell_proxies (DBusGConnection *bus, DBusGProxy **shell_proxy, DBusGPr
 		*shell_proxy = NULL;
 		return ((*error)->code == DBUS_GERROR_NAME_HAS_NO_OWNER);
 	}
+	dbus_g_proxy_add_signal (sp, "removableMediaScanFinished", G_TYPE_INVALID);
+	dbus_g_proxy_add_signal (sp, "databaseLoadComplete", G_TYPE_INVALID);
 
 	rb_debug ("creating player proxy");
 	*player_proxy = dbus_g_proxy_new_from_proxy (sp,
@@ -440,7 +455,6 @@ get_playing_song_info (DBusGProxy *shell_proxy, DBusGProxy *player_proxy, GError
 static void
 print_playing_song (DBusGProxy *shell_proxy, DBusGProxy *player_proxy, const char *format)
 {
-	gboolean errored;
 	GHashTable *properties;
 	guint elapsed = 0;
 	GError *error = NULL;
@@ -467,7 +481,6 @@ print_playing_song (DBusGProxy *shell_proxy, DBusGProxy *player_proxy, const cha
 static void
 print_playing_song_default (DBusGProxy *shell_proxy, DBusGProxy *player_proxy)
 {
-	gboolean errored;
 	GHashTable *properties;
 	char *string;
 	GError *error = NULL;
@@ -520,6 +533,36 @@ rate_song (DBusGProxy *shell_proxy, DBusGProxy *player_proxy, gdouble song_ratin
 	g_free (playing_uri);
 }
 
+static void
+maybe_unblock (GMainLoop *loop)
+{
+	if (db_load_complete && scan_finished) {
+		/* FIXME - we're not really ready to accept playback control just yet.
+		 * the library (at least) needs to populate itself with the database contents,
+		 * which takes some non-zero amount of time.  this hack makes things work
+		 * somewhat reliably.
+		 */
+		g_usleep (G_USEC_PER_SEC);
+		g_main_loop_quit (loop);
+	}
+}
+
+static void
+scan_finished_cb (DBusGProxy *proxy, GMainLoop *loop)
+{
+	rb_debug ("removable media scan finished");
+	scan_finished = TRUE;
+	maybe_unblock (loop);
+}
+
+static void
+db_load_complete_cb (DBusGProxy *proxy, GMainLoop *loop)
+{
+	rb_debug ("database load complete");
+	db_load_complete = TRUE;
+	maybe_unblock (loop);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -562,6 +605,17 @@ main (int argc, char **argv)
 	}
 	g_clear_error (&error);
 
+	/* are we just checking if it's running? */
+	if (check_running) {
+		if (shell_proxy) {
+			rb_debug ("running instance found");
+			exit (0);
+		} else {
+			rb_debug ("no running instance found");
+			exit (2);
+		}
+	}
+
 	/* 1. activate or quit */
 	if (quit) {
 		if (shell_proxy) {
@@ -575,6 +629,7 @@ main (int argc, char **argv)
 	}
 	if (shell_proxy == NULL) {
 		DBusGProxy *bus_proxy;
+		GMainLoop *loop;
 		guint start_service_reply;
 
 		if (no_start) {
@@ -604,13 +659,20 @@ main (int argc, char **argv)
 			exit (1);
 		}
 		g_clear_error (&error);
+
+		/* wait for it to load enough state to be useful */
+		rb_debug ("waiting for database load and removable media scan to finish");
+		loop = g_main_loop_new (NULL, FALSE);
+		dbus_g_proxy_connect_signal (shell_proxy, "removableMediaScanFinished", G_CALLBACK (scan_finished_cb), loop, NULL);
+		dbus_g_proxy_connect_signal (shell_proxy, "databaseLoadComplete", G_CALLBACK (db_load_complete_cb), loop, NULL);
+		g_main_loop_run (loop);
 	}
 
 	/* don't present if we're doing something else */
-	if (next || previous ||
+	if (next || previous || (seek != 0) ||
 	    clear_queue ||
 	    play_uri || other_stuff ||
-	    play || pause || play_pause || stop ||
+	    play || do_pause || play_pause || stop ||
 	    print_playing || print_playing_format || notify ||
 	    (set_volume > -0.01) || volume_up || volume_down || print_volume || mute || unmute || (set_rating > -0.01))
 		no_present = TRUE;
@@ -645,6 +707,13 @@ main (int argc, char **argv)
 		annoy (&error);
 	}
 
+	/* seek in track */
+	if (seek != 0) {
+		rb_debug ("seek");
+		org_gnome_Rhythmbox_Player_seek (player_proxy, seek, &error);
+		annoy (&error);
+	}
+
 	/* 4. add/enqueue */
 	if (clear_queue) {
 		org_gnome_Rhythmbox_Shell_clear_queue (shell_proxy, &error);
@@ -676,6 +745,18 @@ main (int argc, char **argv)
 		}
 	}
 
+	/* select/activate/play source */
+	if (select_source) {
+		org_gnome_Rhythmbox_Shell_activate_source (shell_proxy, select_source, 0, &error);
+		annoy (&error);
+	} else if (activate_source) {
+		org_gnome_Rhythmbox_Shell_activate_source (shell_proxy, activate_source, 1, &error);
+		annoy (&error);
+	} else if (play_source) {
+		org_gnome_Rhythmbox_Shell_activate_source (shell_proxy, play_source, 2, &error);
+		annoy (&error);
+	}
+
 	/* play uri */
 	if (play_uri) {
 		GFile *file;
@@ -698,7 +779,7 @@ main (int argc, char **argv)
 	org_gnome_Rhythmbox_Player_get_playing (player_proxy, &is_playing, &error);
 	if (!annoy (&error)) {
 		rb_debug ("playback state: %d", is_playing);
-		if (play || pause || play_pause) {
+		if (play || do_pause || play_pause) {
 			if (is_playing != play || play_pause) {
 				rb_debug ("calling playPause to change playback state");
 				org_gnome_Rhythmbox_Player_play_pause (player_proxy, FALSE, &error);

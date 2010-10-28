@@ -46,14 +46,17 @@
 #define RB_PARSE_PREFIX (xmlChar *) "prefix"
 #define RB_PARSE_SUFFIX (xmlChar *) "suffix"
 #define RB_PARSE_EQUALS (xmlChar *) "equals"
+#define RB_PARSE_NOT_EQUAL (xmlChar *) "not-equal"
 #define RB_PARSE_DISJ (xmlChar *) "disjunction"
 #define RB_PARSE_GREATER (xmlChar *) "greater"
 #define RB_PARSE_LESS (xmlChar *) "less"
 #define RB_PARSE_CURRENT_TIME_WITHIN (xmlChar *) "current-time-within"
 #define RB_PARSE_CURRENT_TIME_NOT_WITHIN (xmlChar *) "current-time-not-within"
 #define RB_PARSE_YEAR_EQUALS RB_PARSE_EQUALS
+#define RB_PARSE_YEAR_NOT_EQUAL RB_PARSE_NOT_EQUAL
 #define RB_PARSE_YEAR_GREATER RB_PARSE_GREATER
 #define RB_PARSE_YEAR_LESS RB_PARSE_LESS
+
 /**
  * rhythmdb_query_copy:
  * @array: the query to copy.
@@ -76,6 +79,13 @@ rhythmdb_query_copy (GPtrArray *array)
 	return ret;
 }
 
+/**
+ * rhythmdb_query_concatenate:
+ * @query1: query to append to
+ * @query2: query to append
+ *
+ * Appends @query2 to @query1.
+ */
 void
 rhythmdb_query_concatenate (GPtrArray *query1, GPtrArray *query2)
 {
@@ -101,6 +111,16 @@ rhythmdb_query_concatenate (GPtrArray *query1, GPtrArray *query2)
 	}
 }
 
+/**
+ * rhythmdb_query_parse_valist:
+ * @db: the #RhythmDB
+ * @args: the arguments to parse
+ *
+ * Converts a va_list into a parsed query in the form of a @GPtrArray.
+ * See @rhythmdb_query_parse for more information on the parsing process.
+ *
+ * Return value: converted query
+ */
 GPtrArray *
 rhythmdb_query_parse_valist (RhythmDB *db, va_list args)
 {
@@ -118,6 +138,7 @@ rhythmdb_query_parse_valist (RhythmDB *db, va_list args)
 			data->subquery = rhythmdb_query_copy (va_arg (args, GPtrArray *));
 			break;
 		case RHYTHMDB_QUERY_PROP_EQUALS:
+		case RHYTHMDB_QUERY_PROP_NOT_EQUAL:
 		case RHYTHMDB_QUERY_PROP_LIKE:
 		case RHYTHMDB_QUERY_PROP_NOT_LIKE:
 		case RHYTHMDB_QUERY_PROP_PREFIX:
@@ -127,6 +148,7 @@ rhythmdb_query_parse_valist (RhythmDB *db, va_list args)
 		case RHYTHMDB_QUERY_PROP_CURRENT_TIME_WITHIN:
 		case RHYTHMDB_QUERY_PROP_CURRENT_TIME_NOT_WITHIN:
 		case RHYTHMDB_QUERY_PROP_YEAR_EQUALS:
+		case RHYTHMDB_QUERY_PROP_YEAR_NOT_EQUAL:
 		case RHYTHMDB_QUERY_PROP_YEAR_GREATER:
 		case RHYTHMDB_QUERY_PROP_YEAR_LESS:
 			data->propid = va_arg (args, guint);
@@ -146,6 +168,7 @@ rhythmdb_query_parse_valist (RhythmDB *db, va_list args)
 /**
  * rhythmdb_query_parse:
  * @db: a #RhythmDB instance
+ * @Varargs: query criteria to parse
  *
  * Creates a query from a list of criteria.
  *
@@ -203,6 +226,7 @@ rhythmdb_query_parse (RhythmDB *db, ...)
  * rhythmdb_query_append:
  * @db: a #RhythmDB instance
  * @query: a query.
+ * @Varargs: query criteria to append
  *
  * Appends new criteria to the query @query.
  *
@@ -228,6 +252,16 @@ rhythmdb_query_append (RhythmDB *db, GPtrArray *query, ...)
 	va_end (args);
 }
 
+/**
+ * rhythmdb_query_append_params:
+ * @db: the #RhythmDB
+ * @query: the query to append to
+ * @type: query type
+ * @prop: query property
+ * @value: query value
+ *
+ * Appends a new query term to @query.
+ */
 void
 rhythmdb_query_append_params (RhythmDB *db, GPtrArray *query,
 			      RhythmDBQueryType type, RhythmDBPropType prop, const GValue *value)
@@ -245,6 +279,7 @@ rhythmdb_query_append_params (RhythmDB *db, GPtrArray *query,
 		data->subquery = rhythmdb_query_copy (g_value_get_pointer (value));
 		break;
 	case RHYTHMDB_QUERY_PROP_EQUALS:
+	case RHYTHMDB_QUERY_PROP_NOT_EQUAL:
 	case RHYTHMDB_QUERY_PROP_LIKE:
 	case RHYTHMDB_QUERY_PROP_NOT_LIKE:
 	case RHYTHMDB_QUERY_PROP_PREFIX:
@@ -254,6 +289,7 @@ rhythmdb_query_append_params (RhythmDB *db, GPtrArray *query,
 	case RHYTHMDB_QUERY_PROP_CURRENT_TIME_WITHIN:
 	case RHYTHMDB_QUERY_PROP_CURRENT_TIME_NOT_WITHIN:
 	case RHYTHMDB_QUERY_PROP_YEAR_EQUALS:
+	case RHYTHMDB_QUERY_PROP_YEAR_NOT_EQUAL:
 	case RHYTHMDB_QUERY_PROP_YEAR_GREATER:
 	case RHYTHMDB_QUERY_PROP_YEAR_LESS:
 		data->propid = prop;
@@ -271,7 +307,7 @@ rhythmdb_query_append_params (RhythmDB *db, GPtrArray *query,
  * @query: a query.
  *
  * Frees the query @query
- **/
+ */
 void
 rhythmdb_query_free (GPtrArray *query)
 {
@@ -289,6 +325,7 @@ rhythmdb_query_free (GPtrArray *query)
 			rhythmdb_query_free (data->subquery);
 			break;
 		case RHYTHMDB_QUERY_PROP_EQUALS:
+		case RHYTHMDB_QUERY_PROP_NOT_EQUAL:
 		case RHYTHMDB_QUERY_PROP_LIKE:
 		case RHYTHMDB_QUERY_PROP_NOT_LIKE:
 		case RHYTHMDB_QUERY_PROP_PREFIX:
@@ -298,6 +335,7 @@ rhythmdb_query_free (GPtrArray *query)
 		case RHYTHMDB_QUERY_PROP_CURRENT_TIME_WITHIN:
 		case RHYTHMDB_QUERY_PROP_CURRENT_TIME_NOT_WITHIN:
 		case RHYTHMDB_QUERY_PROP_YEAR_EQUALS:
+		case RHYTHMDB_QUERY_PROP_YEAR_NOT_EQUAL:
 		case RHYTHMDB_QUERY_PROP_YEAR_GREATER:
 		case RHYTHMDB_QUERY_PROP_YEAR_LESS:
 			g_value_unset (data->val);
@@ -322,8 +360,8 @@ prop_gvalue_to_string (RhythmDB *db,
 	switch (propid) {
 	case RHYTHMDB_PROP_TYPE:
 		{
-			RhythmDBEntryType type = g_value_get_pointer (val);
-			return g_strdup (type->name);
+			RhythmDBEntryType *type = g_value_get_object (val);
+			return g_strdup (rhythmdb_entry_type_get_name (type));
 		}
 		break;
 	default:
@@ -371,6 +409,19 @@ write_encoded_gvalue (RhythmDB *db,
 	g_free (quoted);
 }
 
+/**
+ * rhythmdb_read_encoded_property:
+ * @db: the #RhythmDB
+ * @content: encoded property value
+ * @propid: property ID
+ * @val: returns the property value
+ *
+ * Converts a string containing a property value into a #GValue
+ * containing the native form of the property value.  For boolean
+ * and numeric properties, this converts the string to a number.
+ * For #RHYTHMDB_PROP_TYPE, this looks up the entry type by name.
+ * For strings, no conversion is required.
+ */
 void
 rhythmdb_read_encoded_property (RhythmDB *db,
 				const char *content,
@@ -407,12 +458,12 @@ rhythmdb_read_encoded_property (RhythmDB *db,
 			g_value_set_double (val, d);
 		}
 		break;
-	case G_TYPE_POINTER:
+	case G_TYPE_OBJECT:			/* hm, really? */
 		if (propid == RHYTHMDB_PROP_TYPE) {
-			RhythmDBEntryType entry_type;
+			RhythmDBEntryType *entry_type;
 			entry_type = rhythmdb_entry_type_get_by_name (db, content);
-			if (entry_type != RHYTHMDB_ENTRY_TYPE_INVALID) {
-				g_value_set_pointer (val, entry_type);
+			if (entry_type != NULL) {
+				g_value_set_object (val, entry_type);
 				break;
 			} else {
 				g_warning ("Unexpected entry type");
@@ -431,6 +482,15 @@ rhythmdb_read_encoded_property (RhythmDB *db,
 	}
 }
 
+/**
+ * rhythmdb_query_serialize:
+ * @db: the #RhythmDB
+ * @query: query to serialize
+ * @parent: XML node to attach the query to
+ *
+ * Converts @query into XML form as a child of @parent.  It can be converted
+ * back into a query by passing @parent to @rhythmdb_query_deserialize.
+ */
 void
 rhythmdb_query_serialize (RhythmDB *db, GPtrArray *query,
 			  xmlNodePtr parent)
@@ -472,8 +532,18 @@ rhythmdb_query_serialize (RhythmDB *db, GPtrArray *query,
 			xmlSetProp (subnode, RB_PARSE_PROP, rhythmdb_nice_elt_name_from_propid (db, data->propid));
 			write_encoded_gvalue (db, subnode, data->propid, data->val);
 			break;
+		case RHYTHMDB_QUERY_PROP_NOT_EQUAL:
+			subnode = xmlNewChild (node, NULL, RB_PARSE_NOT_EQUAL, NULL);
+			xmlSetProp (subnode, RB_PARSE_PROP, rhythmdb_nice_elt_name_from_propid (db, data->propid));
+			write_encoded_gvalue (db, subnode, data->propid, data->val);
+			break;
 		case RHYTHMDB_QUERY_PROP_YEAR_EQUALS:
 			subnode = xmlNewChild (node, NULL, RB_PARSE_YEAR_EQUALS, NULL);
+			xmlSetProp (subnode, RB_PARSE_PROP, rhythmdb_nice_elt_name_from_propid (db, data->propid));
+			write_encoded_gvalue (db, subnode, data->propid, data->val);
+			break;
+		case RHYTHMDB_QUERY_PROP_YEAR_NOT_EQUAL:
+			subnode = xmlNewChild (node, NULL, RB_PARSE_YEAR_NOT_EQUAL, NULL);
 			xmlSetProp (subnode, RB_PARSE_PROP, rhythmdb_nice_elt_name_from_propid (db, data->propid));
 			write_encoded_gvalue (db, subnode, data->propid, data->val);
 			break;
@@ -516,6 +586,15 @@ rhythmdb_query_serialize (RhythmDB *db, GPtrArray *query,
 	}
 }
 
+/**
+ * rhythmdb_query_deserialize:
+ * @db: the #RhythmDB
+ * @parent: parent XML node of serialized query
+ *
+ * Converts a serialized query back into a @GPtrArray query.
+ *
+ * Return value: deserialized query.
+ */
 GPtrArray *
 rhythmdb_query_deserialize (RhythmDB *db, xmlNodePtr parent)
 {
@@ -559,6 +638,15 @@ rhythmdb_query_deserialize (RhythmDB *db, xmlNodePtr parent)
 			else
 				data->type = RHYTHMDB_QUERY_PROP_EQUALS;
 			xmlFree (prop);
+		} else if (!xmlStrcmp (child->name, RB_PARSE_NOT_EQUAL)) {
+			xmlChar* prop;
+
+			prop = xmlGetProp(child, RB_PARSE_PROP);
+			if (!xmlStrcmp(prop, (xmlChar *)"date"))
+				data->type = RHYTHMDB_QUERY_PROP_YEAR_NOT_EQUAL;
+			else
+				data->type = RHYTHMDB_QUERY_PROP_NOT_EQUAL;
+			xmlFree (prop);
 		} else if (!xmlStrcmp (child->name, RB_PARSE_GREATER)) {
 			xmlChar* prop;
 
@@ -589,6 +677,7 @@ rhythmdb_query_deserialize (RhythmDB *db, xmlNodePtr parent)
 		    || !xmlStrcmp (child->name, RB_PARSE_PREFIX)
 		    || !xmlStrcmp (child->name, RB_PARSE_SUFFIX)
 		    || !xmlStrcmp (child->name, RB_PARSE_EQUALS)
+		    || !xmlStrcmp (child->name, RB_PARSE_NOT_EQUAL)
 		    || !xmlStrcmp (child->name, RB_PARSE_GREATER)
 		    || !xmlStrcmp (child->name, RB_PARSE_LESS)
 		    || !xmlStrcmp (child->name, RB_PARSE_YEAR_EQUALS)
@@ -617,7 +706,7 @@ rhythmdb_query_deserialize (RhythmDB *db, xmlNodePtr parent)
 	return query;
 }
 
-/**
+/*
  * This is used to "process" queries, before using them. It is mainly used to two things:
  *
  * 1) performing expensive data transformations once per query, rather than
@@ -625,8 +714,28 @@ rhythmdb_query_deserialize (RhythmDB *db, xmlNodePtr parent)
  *
  * 2) defining criteria in terms of other lower-level ones that the db backend
  *    actually implements. e.g. RHYTHMDB_QUERY_YEAR_*
- **/
+ */
 
+/**
+ * rhythmdb_query_preprocess:
+ * @db: the #RhythmDB
+ * @query: query to preprocess
+ *
+ * Preprocesses a query to prepare it for execution.  This has two main
+ * roles: to perform expensive data transformations once per query, rather
+ * than once per entry, and converting criteria to lower-level forms that
+ * are implemented by the database backend.
+ *
+ * For RHYTHMDB_PROP_SEARCH_MATCH, this converts the search terms into
+ * an array of case-folded words.
+ *
+ * When matching against case-folded properties such as
+ * #RHYTHMDB_PROP_TITLE_FOLDED, this case-folds the query value.
+ *
+ * When performing year-based criteria such as #RHYTHMDB_QUERY_PROP_YEAR_LESS,
+ * it converts the year into the Julian date such that a simple numeric
+ * comparison will work.
+ */
 void
 rhythmdb_query_preprocess (RhythmDB *db, GPtrArray *query)
 {
@@ -708,6 +817,15 @@ rhythmdb_query_preprocess (RhythmDB *db, GPtrArray *query)
 									       RHYTHMDB_QUERY_PROP_LESS, data->propid, end,
 									       RHYTHMDB_QUERY_END);
 					break;
+				case RHYTHMDB_QUERY_PROP_YEAR_NOT_EQUAL:
+					restart_criteria = TRUE;
+					data->type = RHYTHMDB_QUERY_SUBQUERY;
+					data->subquery = rhythmdb_query_parse (db,
+									       RHYTHMDB_QUERY_PROP_LESS, data->propid, begin-1,
+									       RHYTHMDB_QUERY_DISJUNCTION,
+									       RHYTHMDB_QUERY_PROP_GREATER, data->propid, end+1,
+									       RHYTHMDB_QUERY_END);
+					break;
 
 				case RHYTHMDB_QUERY_PROP_YEAR_LESS:
 					restart_criteria = TRUE;
@@ -738,6 +856,16 @@ rhythmdb_query_preprocess (RhythmDB *db, GPtrArray *query)
 	}
 }
 
+/**
+ * rhythmdb_query_append_prop_multiple:
+ * @db: the #RhythmDB
+ * @query: the query to append to
+ * @propid: property ID to match
+ * @items: #GList of values to match against
+ *
+ * Appends a set of criteria to a query to match against any of the values
+ * listed in @items.
+ */
 void
 rhythmdb_query_append_prop_multiple (RhythmDB *db, GPtrArray *query, RhythmDBPropType propid, GList *items)
 {
@@ -779,6 +907,15 @@ rhythmdb_query_append_prop_multiple (RhythmDB *db, GPtrArray *query, RhythmDBPro
 			       RHYTHMDB_QUERY_END);
 }
 
+/**
+ * rhythmdb_query_is_time_relative
+ * @db: the #RhythmDB
+ * @query: the query to check
+ *
+ * Checks if a query contains any time-relative criteria.
+ *
+ * Return value: %TRUE if time-relative criteria found
+ */
 gboolean
 rhythmdb_query_is_time_relative (RhythmDB *db, GPtrArray *query)
 {
@@ -815,6 +952,8 @@ rhythmdb_query_is_time_relative (RhythmDB *db, GPtrArray *query)
  *
  * Returns a supposedly human-readable form of the query.
  * This is only intended for debug usage.
+ *
+ * Returns: allocated string form of the query
  **/
 char *
 rhythmdb_query_to_string (RhythmDB *db, GPtrArray *query)
@@ -852,8 +991,14 @@ rhythmdb_query_to_string (RhythmDB *db, GPtrArray *query)
 		case RHYTHMDB_QUERY_PROP_EQUALS:
 			fmt = "(%s == %s)";
 			break;
+		case RHYTHMDB_QUERY_PROP_NOT_EQUAL:
+			fmt = "(%s != %s)";
+			break;
 		case RHYTHMDB_QUERY_PROP_YEAR_EQUALS:
 			fmt = "(year(%s) == %s)";
+			break;
+		case RHYTHMDB_QUERY_PROP_YEAR_NOT_EQUAL:
+			fmt = "(year(%s) != %s)";
 			break;
 		case RHYTHMDB_QUERY_DISJUNCTION:
 			g_string_append_printf (buf, " || ");

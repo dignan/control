@@ -26,6 +26,7 @@
 
 import rhythmdb, rb
 import gtk, gobject
+import gio
 from warnings import warn
 
 from CoverArtDatabase import CoverArtDatabase
@@ -272,6 +273,8 @@ class ArtDisplayWidget (FadingImage):
 		self.set_padding (0, 5)
 		self.ddg_id = self.connect ('drag-data-get', self.drag_data_get)
 		self.ddr_id = self.connect ('drag-data-received', self.drag_data_received)
+		self.qt_id = self.connect ('query-tooltip', self.query_tooltip)
+		self.props.has_tooltip = True
 		self.current_entry, self.working = None, False
 		self.current_pixbuf, self.current_uri = None, None
 
@@ -301,21 +304,32 @@ class ArtDisplayWidget (FadingImage):
 		else:
 			self.drag_source_unset ()
 
-	def update_tooltips (self, working):
-		if not self.current_entry:
-			self.set_tooltip_text (None)
-		elif working:
-			self.set_tooltip_text (_("Searching... drop artwork here"))
+	def query_tooltip (self, widget, x, y, keyboard_mode, tooltip):
+		if (self.tooltip_image, self.tooltip_text) != (None, None):
+			tooltip.set_text(self.tooltip_text)
+			tooltip.set_icon(self.tooltip_image)
+			return True
 		else:
-			self.set_tooltip_text (_("Drop artwork here"))
+			return False
 
-	def set (self, entry, pixbuf, uri, working):
+	def set (self, entry, pixbuf, uri, tooltip_image, tooltip_text, working):
 		self.current_entry = entry
 		self.current_pixbuf = pixbuf
 		self.current_uri = uri
 		self.set_current_art (pixbuf, working)
 		self.update_dnd_targets ()
-		self.update_tooltips (working)
+
+		self.tooltip_image = None
+		if not self.current_entry:
+			self.tooltip_text = None
+		elif working:
+			self.tooltip_text = _("Searching... drop artwork here")
+		elif (tooltip_image, tooltip_text) != (None, None):
+			self.tooltip_image = tooltip_image
+			self.tooltip_text = tooltip_text
+		else:
+			self.tooltip_text = _("Drop artwork here")
+
 
 	def drag_data_get (self, widget, drag_context, selection_data, info, timestamp):
 		if self.current_pixbuf:
@@ -348,6 +362,7 @@ class ArtDisplayPlugin (rb.Plugin):
 			sp.connect ('playing-song-changed', self.playing_entry_changed),
 			sp.connect ('playing-changed', self.playing_changed)
 		)
+		self.emitting_uri_notify = False
 		db = shell.get_property ("db")
 		self.db_cb_ids = (
 			db.connect_after ('entry-extra-metadata-request::rb:coverArt', self.cover_art_request),
@@ -360,6 +375,7 @@ class ArtDisplayPlugin (rb.Plugin):
 		self.art_widget.connect ('pixbuf-dropped', self.on_set_pixbuf)
 		self.art_widget.connect ('uri-dropped', self.on_set_uri)
 		self.art_widget.connect ('get-max-size', self.get_max_art_size)
+		self.art_widget.connect ('button-press-event', self.on_button_press)
 		self.art_container = gtk.VBox ()
 		self.art_container.pack_start (self.art_widget, padding=6)
 		shell.add_widget (self.art_container, rb.SHELL_UI_LOCATION_SIDEBAR)
@@ -396,32 +412,45 @@ class ArtDisplayPlugin (rb.Plugin):
 			return
 		db = self.shell.get_property ("db")
 
-		self.art_widget.set (entry, None, None, True)
+		self.art_widget.set (entry, None, None, None, None, True)
 		self.art_container.show_all ()
 		# Intitates search in the database (which checks art cache, internet etc.)
 		self.current_entry = entry
 		self.current_pixbuf = None
 		self.art_db.get_pixbuf(db, entry, True, self.on_get_pixbuf_completed)
 
-	def on_get_pixbuf_completed(self, entry, pixbuf, uri):
+	def on_get_pixbuf_completed(self, entry, pixbuf, uri, tooltip_image, tooltip_text):
 		# Set the pixbuf for the entry returned from the art db
 		if entry == self.current_entry:
 			self.current_pixbuf = pixbuf
-			self.art_widget.set (entry, pixbuf, uri, False)
+
+			if tooltip_image is None:
+				pb = None
+			elif tooltip_image.startswith("/"):
+				pb = gtk.gdk.pixbuf_new_from_file(tooltip_image)
+			else:
+				f = self.find_file(tooltip_image)
+				pb = gtk.gdk.pixbuf_new_from_file(f)
+			self.art_widget.set (entry, pixbuf, uri, pb, tooltip_text, False)
+
 		if pixbuf:
 			db = self.shell.get_property ("db")
 			# This might be from a playing-changed signal,
 			# in which case consumers won't be ready yet.
 			def idle_emit_art():
 				db.emit_entry_extra_metadata_notify (entry, "rb:coverArt", pixbuf)
+				if uri:
+					self.emitting_uri_notify = True
+					db.emit_entry_extra_metadata_notify (entry, "rb:coverArt-uri", uri)
+					self.emitting_uri_notify = False
 				return False
 			gobject.idle_add(idle_emit_art)
 
 	def cover_art_request (self, db, entry):
 		a = [None]
-		def callback(entry, pixbuf, uri):
+		def callback(entry, pixbuf, uri, tooltip_image, tooltip_text):
 			a[0] = pixbuf
-			self.on_get_pixbuf_completed(entry, pixbuf, uri)
+			self.on_get_pixbuf_completed(entry, pixbuf, uri, tooltip_image, tooltip_text)
 
 		playing = (entry == self.current_entry)
 		self.art_db.get_pixbuf(db, entry, playing, callback)
@@ -437,10 +466,19 @@ class ArtDisplayPlugin (rb.Plugin):
 		self.art_db.cancel_get_pixbuf (entry)
 		if self.current_pixbuf == metadata:
 			return
-		self.art_widget.set (entry, metadata, None, False)
+
+		# cache the pixbuf so we can provide a url
+		uri = self.art_db.cache_pixbuf (db, entry, metadata)
+		self.art_widget.set (entry, metadata, uri, None, None, False)
+		self.emitting_uri_notify = True
+		db.emit_entry_extra_metadata_notify (entry, "rb:coverArt-uri", uri)
+		self.emitting_uri_notify = False
 
 	def cover_art_uri_notify (self, db, entry, field, metadata):
 		if entry != self.current_entry:
+			return
+
+		if self.emitting_uri_notify:
 			return
 
 		if not metadata:
@@ -458,7 +496,7 @@ class ArtDisplayPlugin (rb.Plugin):
 						pixbuf = pbl.get_pixbuf ()
 						if pixbuf:
 							self.art_db.cancel_get_pixbuf (entry)
-							self.on_get_pixbuf_completed (entry, pixbuf, uri)
+							self.on_get_pixbuf_completed (entry, pixbuf, uri, None, None)
 				except GError:
 					pass
 
@@ -488,3 +526,14 @@ class ArtDisplayPlugin (rb.Plugin):
 		(width, height) = self.shell.props.window.get_size()
 		return height / 3
 
+	def on_button_press (self, widget, event):
+		# on double clicks, open the cover image (if there is one) in the default
+		# image viewer
+		if event.type != gtk.gdk._2BUTTON_PRESS or event.button != 1:
+			return
+
+		if self.art_widget.current_uri is None:
+			return
+
+		f = gio.File(self.art_widget.current_uri)
+		gtk.show_uri(self.shell.props.window.get_screen(), f.get_uri(), event.time)

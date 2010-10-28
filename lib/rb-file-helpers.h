@@ -46,8 +46,8 @@ char *		rb_find_user_cache_file	(const char *name,
 
 char *		rb_canonicalise_uri	(const char *uri);
 
-gboolean	rb_uri_mkstemp		(const char *prefix, char **uri,
-					 GOutputStream **handle, GError **error);
+gboolean	rb_uri_mkstemp		(const char *prefix, char **uri_ret,
+					 GOutputStream **stream, GError **error);
 
 char *		rb_uri_resolve_symlink	(const char *uri, GError **error);
 gboolean	rb_uri_is_directory	(const char *uri);
@@ -92,7 +92,7 @@ gboolean	rb_uri_create_parent_dirs (const char *uri, GError **error);
 void		rb_file_helpers_init	(gboolean uninstalled);
 void		rb_file_helpers_shutdown(void);
 
-char *		rb_uri_get_filesystem_type (const char *uri);
+char *		rb_uri_get_filesystem_type (const char *uri, char **mount_point);
 void		rb_sanitize_path_for_msdos_filesystem (char *path);
 char *		rb_sanitize_uri_for_filesystem(const char *uri);
 

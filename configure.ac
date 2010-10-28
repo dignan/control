@@ -1,7 +1,8 @@
 AC_PREREQ(2.53)
 AC_INIT([rhythmbox],
-	[0.12.6],
+	[0.13.1],
 	[https://bugzilla.gnome.org/enter_bug.cgi?product=rhythmbox])
+AC_CONFIG_SRCDIR(rhythmbox.pc.in)
 AC_CONFIG_MACRO_DIR(macros)
 AM_CONFIG_HEADER(config.h)
 AM_INIT_AUTOMAKE([1.9 dist-bzip2 no-dist-gzip])
@@ -11,12 +12,23 @@ AC_SUBST(ACLOCAL_AMFLAGS, "-I macros")
 AM_MAINTAINER_MODE
 GNOME_MAINTAINER_MODE_DEFINES
 
+# plugin API versioning
+# Increment on interface addition, reset on removal
+RHYTHMBOX_CORE_AGE=1
+# Increment on interface add, remove, or change
+RHYTHMBOX_CORE_CURRENT=2
+# Increment on source change, reset when CURRENT changes.
+RHYTHMBOX_CORE_REVISION=0
+
+AC_SUBST(RHYTHMBOX_CORE_AGE)
+AC_SUBST(RHYTHMBOX_CORE_CURRENT)
+AC_SUBST(RHYTHMBOX_CORE_REVISION)
+
 m4_ifdef([AM_SILENT_RULES],[AM_SILENT_RULES([yes])],)
 
 dnl XXXX hack to kill off all the libtool tags ...
 dnl it isn't like we are using C++ or Fortran.
 m4_define([_LT_AC_TAGCONFIG],[])
-
 
 IT_PROG_INTLTOOL([0.35.0])
 
@@ -30,8 +42,8 @@ AC_CHECK_SIZEOF(long)
 
 DBUS_MIN_REQS=0.35
 GST_0_10_REQS=0.10.20
-GTK_REQS=2.14.0
-GLIB_REQS=2.16.0
+GTK_REQS=2.18.0
+GLIB_REQS=2.18.0
 GNOME_MEDIA_PROFILES_REQS=2.8
 LIBNOTIFY_REQS=0.4.1
 LIBGPOD_REQS=0.6
@@ -39,13 +51,15 @@ MUSICBRAINZ_REQS=2.1.0
 MUSICBRAINZ3_REQS=3.0.2
 NCB_MIN_REQS=2.21.6
 BRASERO_MIN_REQS=0.9.1
-TOTEM_PLPARSER_REQS=2.26.0
+TOTEM_PLPARSER_REQS=2.32.1
 VALA_REQS=0.1.0
 AVAHI_REQS=0.6
 LIBSOUP_REQS=2.26.0
 GUDEV_REQS=143
 LIBMTP_REQS=0.3.0
 PYGOBJECT_REQUIRED=2.15.4
+WEBKIT_MIN_REQS=1.1.17
+GLIB_GDBUS_REQS=2.25.12
 
 AC_MSG_CHECKING([for GNU extension fwrite_unlocked])
 AC_LINK_IFELSE(
@@ -69,15 +83,7 @@ AM_CONDITIONAL(MKDTEMP_MISSING, test x$mkdtemp_missing = xtrue)
 
 PKG_PROG_PKG_CONFIG
 
-PKG_CHECK_MODULES(RB_CLIENT, glib-2.0 >= $GLIB_REQS gio-2.0 >= $GLIB_REQS)
-
-# use gtk status icon with gtk >= 2.16
-PKG_CHECK_EXISTS(gtk+-2.0 >= 2.16, [
-	use_gtk_status_icon=yes
-	AC_DEFINE(USE_GTK_STATUS_ICON, 1, [Use GtkStatusIcon])
-], [use_gtk_status_icon=no])
-AM_CONDITIONAL(USE_GTK_STATUS_ICON, test x"$use_gtk_status_icon" = xyes)
-
+PKG_CHECK_MODULES(RB_CLIENT, glib-2.0 >= $GLIB_REQS gio-2.0 >= $GLIB_REQS gio-unix-2.0 >= $GLIB_REQS)
 
 dnl  note: gio-unix-2.0 is here for libmediaplayerid
 PKG_CHECK_MODULES(RHYTHMBOX,				\
@@ -97,6 +103,10 @@ else
        AC_MSG_ERROR([totem playlist parsing library has Podcast parsing disabled])
    fi
 fi
+
+dnl check for GDBus
+PKG_CHECK_EXISTS(glib-2.0 >= $GLIB_GDBUS_REQS, [have_gdbus=yes], [have_gdbus=no])
+AM_CONDITIONAL(USE_GDBUS, test x"$have_gdbus" = xyes)
 
 dnl gudev
 AC_ARG_WITH(gudev,
@@ -153,6 +163,11 @@ if test "x$with_ipod" != "xno"; then
 	  AC_MSG_ERROR([iPod explicitly requested but libgpod couldn't be found])
 	fi
 	if test "x$have_libgpod" = "xyes"; then
+	  PKG_CHECK_EXISTS(libgpod-1.0 >= 0.7.92, have_itdb_start_stop_sync=yes,
+						  have_itdb_start_stop_sync=no)
+          if test "x$have_itdb_start_stop_sync" = "xyes"; then
+	    AC_DEFINE([HAVE_ITDB_START_STOP_SYNC], 1, [Indicates whether libgpod is new enough to have its itdb_start/stop_sync API])
+          fi
 	  use_ipod=yes
 	  AC_SUBST(IPOD_CFLAGS)
 	  AC_SUBST(IPOD_LIBS)
@@ -245,11 +260,6 @@ PKG_CHECK_MODULES(GSTREAMER_0_10, \
 RHYTHMBOX_CFLAGS="$RHYTHMBOX_CFLAGS $GSTREAMER_0_10_CFLAGS"
 RHYTHMBOX_LIBS="$RHYTHMBOX_LIBS $GSTREAMER_0_10_LIBS -lgstinterfaces-0.10"
 
-dnl DAAP (iTunes Music Shares)
-AC_ARG_ENABLE(daap,
-	      AC_HELP_STRING([--disable-daap],
-			     [Disable Digital Audio Access Protocol (music sharing) in rhythmbox]))
-
 AC_ARG_WITH(mdns,
    AC_HELP_STRING([--with-mdns=auto|avahi],
    [Select the mDNS/DNS-SD implementation to use (default auto)]),,
@@ -322,22 +332,6 @@ if test x$enable_libnotify = xyes ; then
     AC_SUBST(NOTIFY_LIBS)
 fi
 
-dnl daap support
-if test "x$enable_daap" != "xno"; then
-	if test x"$have_mdns" = xno; then
-		if test "x$enable_daap" = "xyes"; then
-			AC_MSG_ERROR([DAAP support explicitly requested, but no mDNS implementation found.  Install Avahi])
-		fi
-		enable_daap=no
-	else
-		AC_DEFINE(WITH_DAAP_SUPPORT, 1, [Define if DAAP should be enabled])
-		enable_daap="yes"
-		AC_SUBST(MDNS_CFLAGS)
-		AC_SUBST(MDNS_LIBS)
-	fi
-fi
-AM_CONDITIONAL(USE_DAAP, test "x$enable_daap" != "xno")
-
 AC_CHECK_LIB(z, uncompress)
 
 dnl check for libgstcdda, needed to list the audio tracks
@@ -359,6 +353,11 @@ if test x"$enable_musicbrainz" != "xno"; then
 	AC_SUBST(MUSICBRAINZ_LIBS)
 
 	if test x"$have_musicbrainz3" = xyes; then
+		oldlibs=$LIBS
+		LIBS="$LIBS $MUSICBRAINZ3_LIBS"
+		AC_CHECK_FUNCS(mb_extract_uuid)
+		LIBS="$oldlibs"
+
 		AC_DEFINE([HAVE_MUSICBRAINZ3], 1, [Whether libmusicbrainz3 is available])
 	fi
 	if test x"$have_musicbrainz" = xyes; then
@@ -509,6 +508,22 @@ if test x"$enable_lirc" != xno; then
 fi
 AM_CONDITIONAL(WITH_LIRC, test x"$with_lirc" = xyes)
 
+dnl WebKit
+AC_ARG_WITH(webkit,
+	    AC_HELP_STRING([--with-webkit],
+			   [Use WebKit to display HTML]),,
+	    with_webkit_gtk=auto)
+if test "x$with_webkit_gtk" != xno; then
+	PKG_CHECK_MODULES(WEBKIT, [webkit-1.0 >= $WEBKIT_MIN_REQS], have_webkit=yes, have_webkit=no)
+	if test "x$have_webkit" = "xno" -a "x$with_webkit" = "xyes"; then
+		AC_MSG_ERROR([WebKit support explicitly requested, but WebKit could not be found])
+	fi
+	if test "x$have_webkit" = "xyes"; then
+		AC_DEFINE(WITH_WEBKIT, 1, [Define if WebKit is enabled])
+	fi
+fi
+AM_CONDITIONAL(WITH_WEBKIT, test x"$have_webkit" = xyes)
+
 
 AC_ARG_ENABLE(uninstalled-build,
               AC_HELP_STRING([--enable-uninstalled-build],
@@ -522,22 +537,6 @@ AC_DEFINE_UNQUOTED(SHARE_UNINSTALLED_DIR,"`pwd`/$srcdir/data",[path to source da
 AC_DEFINE_UNQUOTED(SHARE_UNINSTALLED_BUILDDIR,"`pwd`/data",[path to built source data dir])
 AC_DEFINE_UNQUOTED(METADATA_UNINSTALLED_DIR,"`pwd`/metadata",[path to metadata build dir])
 AC_SUBST(ROOT_UNINSTALLED_DIR)
-
-dnl libsexy is only required with gtk < 2.16
-PKG_CHECK_EXISTS(gtk+-2.0 >= 2.16, [need_libsexy=no], [need_libsexy=yes])
-
-AC_ARG_WITH(internal-libsexy,
-            AC_HELP_STRING([--with-internal-libsexy],
-			   [Build using internal libsexy library]),,
-	      with_internal_libsexy=no)
-if test "x$need_libsexy" = "xyes" && test "x$with_internal_libsexy" = "xno"; then
-	PKG_CHECK_MODULES(LIBSEXY, libsexy >= 0.1.5,
-		          with_internal_libsexy=no,
-		          with_internal_libsexy=yes)
-fi
-AC_SUBST(LIBSEXY_CFLAGS)
-AC_SUBST(LIBSEXY_LIBS)
-AM_CONDITIONAL(WITH_INTERNAL_LIBSEXY, test "x$with_internal_libsexy" = "xyes")
 
 
 dnl warnings bits, copied from gnome-keyring configure.in
@@ -596,6 +595,12 @@ if test "$GCC" = "yes" -a "$set_more_warnings" != "no"; then
 	CFLAGS="$SAVE_CFLAGS"
 	unset SAVE_CFLAGS
 	unset has_wnoerror
+
+	dnl enable GSEAL if gtk is new enough
+	PKG_CHECK_EXISTS(gtk+-2.0 >= 2.20.0, [CFLAGS="$CFLAGS -DGSEAL_ENABLE"], [])
+
+	dnl disable deprecated stuff
+	CFLAGS="$CFLAGS $DISABLE_DEPRECATED"
 else
 	AC_MSG_RESULT(no)
 fi
@@ -710,21 +715,18 @@ if test "x$have_python" != "xno"; then
 	GST_PYTHON_DEFSDIR=`$PKG_CONFIG --variable=defsdir gst-python-0.10`
 	AC_MSG_RESULT([$GST_PYTHON_DEFSDIR])
 
-	AC_MSG_CHECKING([for pygtk codegen])
-	PYGTK_CODEGEN="$PYTHON `$PKG_CONFIG --variable=codegendir pygtk-2.0`/codegen.py"
-	AC_MSG_RESULT([$PYGTK_CODEGEN])
+	AC_MSG_CHECKING([for pygobject codegen])
+	PYGOBJECT_CODEGEN="$PYTHON `$PKG_CONFIG --variable=codegendir pygobject-2.0`/codegen.py"
+	AC_MSG_RESULT([$PYGOBJECT_CODEGEN])
 
-	AC_MSG_CHECKING([for pygtk h2def])
-	PYGTK_H2DEF="$PYTHON `$PKG_CONFIG --variable=codegendir pygtk-2.0`/h2def.py"
-	AC_MSG_RESULT([$PYGTK_H2DEF])
+	AC_MSG_CHECKING([for pygobject h2def])
+	PYGOBJECT_H2DEF="$PYTHON `$PKG_CONFIG --variable=codegendir pygobject-2.0`/h2def.py"
+	AC_MSG_RESULT([$PYGOBJECT_H2DEF])
 
 	AC_SUBST([PYGTK_DEFSDIR])
 	AC_SUBST([GST_PYTHON_DEFSDIR])
-	AC_SUBST([PYGTK_CODEGEN])
-	AC_SUBST([PYGTK_H2DEF])
-
-	PKG_CHECK_EXISTS([pygobject-2.0 >= 2.13.2],
-			 AC_DEFINE([PYGOBJECT_CAN_MARSHAL_GVALUE], [1], [Define if pygobject can marshal GValues]))
+	AC_SUBST([PYGOBJECT_CODEGEN])
+	AC_SUBST([PYGOBJECT_H2DEF])
 fi
 
 if test "x$have_python" != "xno" -a "x$enable_python" != "xno"; then
@@ -748,7 +750,9 @@ if test "x$enable_vala" = "xyes"; then
 		          with_vala=no)
 	if test "x$with_vala" = "xyes"; then
 		VALAC="`pkg-config --variable=prefix vala-1.0`/bin/valac"
+		VAPIDIR="`pkg-config --variable=vapidir vala-1.0`"
 		AC_SUBST([VALAC])
+		AC_SUBST([VAPIDIR])
 	elif test "x$enable_vala" = "xyes"; then
 		AC_MSG_ERROR([Vala plugin support explicitly requested, but not found])
 	fi
@@ -785,11 +789,61 @@ AC_ARG_VAR([MOZILLA_PLUGINDIR],[Where to install the browser plugin to])
 
 AM_CONDITIONAL([ENABLE_BROWSER_PLUGIN], test x$enable_browser_plugin = xyes)
 
+
+dnl ================================================================
+dnl Use libdmapsharing for DAAP?
+dnl ================================================================
+AC_ARG_ENABLE(daap,
+              AC_HELP_STRING([--disable-daap],
+                             [Disable DAAP support]),,
+              enable_daap=auto)
+if test "x$enable_daap" != "xno"; then
+	PKG_CHECK_MODULES(DMAPSHARING, libdmapsharing-2.2 >= 2.1.6,
+			  have_libdmapsharing=yes,
+			  have_libdmapsharing=no)
+	if test "x$have_libdmapsharing" = "xno" -a "x$enable_daap" = "xyes"; then
+		AC_MSG_ERROR([DAAP support explicitly requested, but libdmapsharing couldn't be found])
+	fi
+	if test x"$have_libdmapsharing" = "xyes"; then
+		AC_DEFINE(HAVE_LIBDMAPSHARING, 1, [Define if libdmapsharing support is enabled])
+	fi
+fi
+
+AM_CONDITIONAL(USE_LIBDMAPSHARING, test x"$have_libdmapsharing" = "xyes")
+
+AC_SUBST(DMAPSHARING_CFLAGS)
+AC_SUBST(DMAPSHARING_LIBS)
+
+dnl ================================================================
+dnl Dependencies for Last.fm plugin
+dnl ================================================================
+AC_ARG_ENABLE(lastfm,
+              AC_HELP_STRING([--disable-lastfm],
+                             [Disable Last.fm support]),,
+              enable_lastfm=auto)
+if test "x$enable_lastfm" != "xno"; then
+	PKG_CHECK_MODULES(JSON_GLIB, json-glib-1.0,
+			  have_json_glib=yes,
+			  have_json_glib=no)
+	if test "x$have_json_glib" = "xno" -a "x$enable_lastfm" = "xyes"; then
+		AC_MSG_ERROR([Last.fm support explicitly requested, but json-glib couldn't be found])
+	fi
+	if test x"$have_json_glib" = "xyes"; then
+		AC_DEFINE(HAVE_JSON_GLIB, 1, [Define if json-glib support is enabled])
+	fi
+fi
+
+AM_CONDITIONAL(ENABLE_LASTFM, test x"$have_json_glib" = "xyes")
+
+AC_SUBST(JSON_GLIB_CFLAGS)
+AC_SUBST(JSON_GLIB_LIBS)
+
 dnl ================================================================
 dnl end-game
 dnl ================================================================
 
 AC_OUTPUT([
+rhythmbox.pc
 Makefile
 macros/Makefile
 lib/Makefile
@@ -797,11 +851,11 @@ lib/libmediaplayerid/Makefile
 metadata/Makefile
 rhythmdb/Makefile
 widgets/Makefile
-widgets/libsexy/Makefile
 podcast/Makefile
 shell/Makefile
 data/Makefile
 data/rhythmbox.desktop.in
+data/rhythmbox-device.desktop.in
 data/ui/Makefile
 data/icons/Makefile
 data/icons/hicolor/Makefile
@@ -814,22 +868,24 @@ data/icons/hicolor/22x22/Makefile
 data/icons/hicolor/22x22/actions/Makefile
 data/icons/hicolor/22x22/apps/Makefile
 data/icons/hicolor/22x22/places/Makefile
-data/icons/hicolor/22x22/status/Makefile
 data/icons/hicolor/24x24/Makefile
 data/icons/hicolor/24x24/apps/Makefile
+data/icons/hicolor/24x24/places/Makefile
 data/icons/hicolor/32x32/Makefile
 data/icons/hicolor/32x32/actions/Makefile
 data/icons/hicolor/32x32/apps/Makefile
 data/icons/hicolor/32x32/places/Makefile
-data/icons/hicolor/32x32/status/Makefile
 data/icons/hicolor/48x48/Makefile
 data/icons/hicolor/48x48/apps/Makefile
+data/icons/hicolor/256x256/Makefile
+data/icons/hicolor/256x256/apps/Makefile
 data/icons/hicolor/scalable/Makefile
 data/icons/hicolor/scalable/actions/Makefile
 data/icons/hicolor/scalable/apps/Makefile
 data/icons/hicolor/scalable/places/Makefile
-data/icons/hicolor/scalable/status/Makefile
+data/icons/src/Makefile
 sources/Makefile
+sources/sync/Makefile
 plugins/Makefile
 plugins/sample/Makefile
 plugins/audiocd/Makefile
@@ -865,6 +921,12 @@ plugins/visualizer/Makefile
 plugins/mmkeys/Makefile
 plugins/context/Makefile
 plugins/context/context/Makefile
+plugins/sendto/Makefile
+plugins/replaygain/Makefile
+plugins/replaygain/replaygain/Makefile
+plugins/mpris/Makefile
+plugins/dbus-media-server/Makefile
+plugins/rbzeitgeist/Makefile
 bindings/Makefile
 bindings/python/Makefile
 bindings/vala/Makefile
@@ -923,7 +985,7 @@ elif test x"$have_libnautilus_burn" != xno; then
 else
 	AC_MSG_NOTICE([   CD burning support disabled])
 fi
-if test x"$enable_daap" = xyes; then
+if test x"$have_libdmapsharing" = xyes; then
 	AC_MSG_NOTICE([** DAAP (music sharing) support is enabled])
 else
 	AC_MSG_NOTICE([   DAAP (music sharing) support is disabled])
@@ -955,13 +1017,6 @@ if test x"$use_gnome_keyring" = xyes; then
 else
 	AC_MSG_NOTICE([   gnome-keyring support disabled])
 fi
-if test x"$need_libsexy" = xyes; then
-	if test x"$with_internal_libsexy" = xyes; then
-		AC_MSG_NOTICE([   using internal libsexy])
-	else
-		AC_MSG_NOTICE([** using system-wide libsexy])
-	fi
-fi
 if test "x$enable_fm_radio" != xno; then
 	AC_MSG_NOTICE([** FM radio support enabled])
 else
@@ -972,6 +1027,12 @@ if test "x$enable_browser_plugin" != xno; then
 	AC_MSG_NOTICE([** iTunes detection browser plugin (for podcasts) enabled])
 else
 	AC_MSG_NOTICE([   iTunes detection browser plugin (for podcasts) disabled])
+fi
+
+if test "x$have_json_glib" = xyes; then
+	AC_MSG_NOTICE([** Last.fm support enabled])
+else
+	AC_MSG_NOTICE([   Last.fm support disabled])
 fi
 
 AC_MSG_NOTICE([End options])

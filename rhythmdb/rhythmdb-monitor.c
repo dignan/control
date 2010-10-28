@@ -40,9 +40,14 @@
 #include "rb-util.h"
 #include "rhythmdb.h"
 #include "rhythmdb-private.h"
+#include "rhythmdb-query-result-list.h"
 #include "rb-file-helpers.h"
 #include "rb-preferences.h"
 #include "eel-gconf-extensions.h"
+
+#if !GLIB_CHECK_VERSION(2,24,0)
+#define G_FILE_MONITOR_SEND_MOVED	0
+#endif
 
 #define RHYTHMDB_FILE_MODIFY_PROCESS_TIME 2
 
@@ -136,7 +141,7 @@ actually_add_monitor (RhythmDB *db, GFile *directory, GError **error)
 		return;
 	}
 
-	monitor = g_file_monitor_directory (directory, 0, db->priv->exiting, error);
+	monitor = g_file_monitor_directory (directory, G_FILE_MONITOR_SEND_MOVED, db->priv->exiting, error);
 	if (monitor != NULL) {
 		g_signal_connect_object (G_OBJECT (monitor),
 					 "changed",
@@ -216,14 +221,8 @@ rhythmdb_check_changed_file (RBRefString *uri, gpointer data, RhythmDB *db)
 
 	g_get_current_time (&time);
 	if (time.tv_sec >= time_sec + RHYTHMDB_FILE_MODIFY_PROCESS_TIME) {
-		/* process and remove from table */
-		RhythmDBEvent *event = g_slice_new0 (RhythmDBEvent);
-		event->db = db;
-		event->type = RHYTHMDB_EVENT_FILE_CREATED_OR_MODIFIED;
-		event->uri = rb_refstring_ref (uri);
-
-		g_async_queue_push (db->priv->event_queue, event);
 		rb_debug ("adding newly located file %s", rb_refstring_get (uri));
+		rhythmdb_add_uri (db, rb_refstring_get (uri));
 		return TRUE;
 	}
 
@@ -293,7 +292,14 @@ rhythmdb_directory_change_cb (GFileMonitor *monitor,
 			      RhythmDB *db)
 {
 	char *canon_uri;
+	char *other_canon_uri = NULL;
+	RhythmDBEntry *entry;
+
 	canon_uri = g_file_get_uri (file);
+	if (other_file != NULL) {
+		other_canon_uri = g_file_get_uri (other_file);
+	}
+
 	rb_debug ("directory event %d for %s", event_type, canon_uri);
 
 	switch (event_type) {
@@ -338,20 +344,48 @@ rhythmdb_directory_change_cb (GFileMonitor *monitor,
 		/* hmm.. */
 		break;
 	case G_FILE_MONITOR_EVENT_DELETED:
-		if (rhythmdb_entry_lookup_by_location (db, canon_uri)) {
-			RhythmDBEvent *event = g_slice_new0 (RhythmDBEvent);
-			event->db = db;
-			event->type = RHYTHMDB_EVENT_FILE_DELETED;
-			event->uri = rb_refstring_new (canon_uri);
-			g_async_queue_push (db->priv->event_queue, event);
+		entry = rhythmdb_entry_lookup_by_location (db, canon_uri);
+		if (entry != NULL) {
+			g_hash_table_remove (db->priv->changed_files, entry->location);
+			rhythmdb_entry_set_visibility (db, entry, FALSE);
+			rhythmdb_commit (db);
 		}
 		break;
+#if GLIB_CHECK_VERSION(2,24,0)
+	case G_FILE_MONITOR_EVENT_MOVED:
+		if (other_canon_uri == NULL) {
+			break;
+		}
+
+		entry = rhythmdb_entry_lookup_by_location (db, other_canon_uri);
+		if (entry != NULL) {
+			rb_debug ("file move target %s already exists in database", other_canon_uri);
+			entry = rhythmdb_entry_lookup_by_location (db, canon_uri);
+			if (entry != NULL) {
+				g_hash_table_remove (db->priv->changed_files, entry->location);
+				rhythmdb_entry_set_visibility (db, entry, FALSE);
+				rhythmdb_commit (db);
+			}
+		} else {
+			entry = rhythmdb_entry_lookup_by_location (db, canon_uri);
+			if (entry != NULL) {
+				GValue v = {0,};
+				g_value_init (&v, G_TYPE_STRING);
+				g_value_set_string (&v, other_canon_uri);
+				rhythmdb_entry_set_internal (db, entry, TRUE, RHYTHMDB_PROP_LOCATION, &v);
+				g_value_unset (&v);
+			}
+		}
+		break;
+#endif
 	case G_FILE_MONITOR_EVENT_PRE_UNMOUNT:
 	case G_FILE_MONITOR_EVENT_UNMOUNTED:
+	default:
 		break;
 	}
 
 	g_free (canon_uri);
+	g_free (other_canon_uri);
 }
 
 void
@@ -378,68 +412,7 @@ rhythmdb_monitor_uri_path (RhythmDB *db, const char *uri, GError **error)
 	}
 
 	actually_add_monitor (db, directory, error);
-}
-
-typedef struct
-{
-	RhythmDB *db;
-	RBRefString *mount_point;
-	gboolean mounted;
-} MountCtxt;
-
-static void
-entry_volume_mounted_or_unmounted (RhythmDBEntry *entry,
-				   MountCtxt *ctxt)
-{
-	RBRefString *mount_point;
-	const char *location;
-
-	if (entry->type != RHYTHMDB_ENTRY_TYPE_SONG &&
-	    entry->type != RHYTHMDB_ENTRY_TYPE_IMPORT_ERROR) {
-		return;
-	}
-
-	mount_point = rhythmdb_entry_get_refstring (entry, RHYTHMDB_PROP_MOUNTPOINT);
-	if (mount_point == NULL || !rb_refstring_equal (mount_point, ctxt->mount_point)) {
-		return;
-	}
-	location = rhythmdb_entry_get_string (entry, RHYTHMDB_PROP_LOCATION);
-
-	if (entry->type == RHYTHMDB_ENTRY_TYPE_SONG) {
-		if (ctxt->mounted) {
-			rb_debug ("queueing stat for entry %s (mounted)", location);
-
-			/* make files visible immediately,
-			 * then hide any that turn out to be missing.
-			 */
-			rhythmdb_entry_set_visibility (ctxt->db, entry, TRUE);
-			rhythmdb_add_uri_with_types (ctxt->db,
-						     location,
-						     RHYTHMDB_ENTRY_TYPE_SONG,
-						     RHYTHMDB_ENTRY_TYPE_IGNORE,
-						     RHYTHMDB_ENTRY_TYPE_IMPORT_ERROR);
-		} else {
-			GTimeVal time;
-			GValue val = {0, };
-
-			rb_debug ("hiding entry %s (unmounted)", location);
-
-			g_get_current_time (&time);
-			g_value_init (&val, G_TYPE_ULONG);
-			g_value_set_ulong (&val, time.tv_sec);
-			rhythmdb_entry_set_internal (ctxt->db, entry, FALSE,
-						     RHYTHMDB_PROP_LAST_SEEN, &val);
-			g_value_unset (&val);
-
-			rhythmdb_entry_set_visibility (ctxt->db, entry, FALSE);
-		}
-	} else if (entry->type == RHYTHMDB_ENTRY_TYPE_IMPORT_ERROR) {
-		/* delete import errors for files on unmounted volumes */
-		if (ctxt->mounted == FALSE) {
-			rb_debug ("removing import error for %s (unmounted)", location);
-			rhythmdb_entry_delete (ctxt->db, entry);
-		}
-	}
+	g_object_unref (directory);
 }
 
 static void
@@ -447,25 +420,70 @@ rhythmdb_mount_added_cb (GVolumeMonitor *monitor,
 			 GMount *mount,
 			 RhythmDB *db)
 {
-	MountCtxt ctxt;
-	char *mp;
+	GList *l;
+	RhythmDBQueryResultList *list;
+	char *mountpoint;
 	GFile *root;
 
 	root = g_mount_get_root (mount);
-	mp = g_file_get_uri (root);
+	mountpoint = g_file_get_uri (root);
+	rb_debug ("volume %s mounted", mountpoint);
 	g_object_unref (root);
 
-	ctxt.mount_point = rb_refstring_new (mp);
-	g_free (mp);
+	list = rhythmdb_query_result_list_new ();
+	rhythmdb_do_full_query (db,
+				RHYTHMDB_QUERY_RESULTS (list),
+				RHYTHMDB_QUERY_PROP_EQUALS,
+				  RHYTHMDB_PROP_TYPE,
+				  RHYTHMDB_ENTRY_TYPE_SONG,
+				RHYTHMDB_QUERY_PROP_EQUALS,
+				  RHYTHMDB_PROP_MOUNTPOINT,
+				  mountpoint,
+				RHYTHMDB_QUERY_END);
+	l = rhythmdb_query_result_list_get_results (list);
+	rb_debug ("%d mounted entries to process", g_list_length (l));
+	for (; l != NULL; l = l->next) {
+		RhythmDBEntry *entry = l->data;
+		const char *location = rhythmdb_entry_get_string (entry, RHYTHMDB_PROP_LOCATION);
 
-	ctxt.db = db;
-	ctxt.mounted = TRUE;
-	rb_debug ("volume %s mounted", rb_refstring_get (ctxt.mount_point));
-	rhythmdb_entry_foreach (db,
-				(GFunc)entry_volume_mounted_or_unmounted,
-				&ctxt);
+		rhythmdb_entry_update_availability (entry, RHYTHMDB_ENTRY_AVAIL_MOUNTED);
+		if (rb_uri_is_local (location)) {
+			rhythmdb_add_uri_with_types (db,
+						     location,
+						     RHYTHMDB_ENTRY_TYPE_SONG,
+						     RHYTHMDB_ENTRY_TYPE_IGNORE,
+						     RHYTHMDB_ENTRY_TYPE_IMPORT_ERROR);
+		}
+	}
+	g_object_unref (list);
+	g_free (mountpoint);
 	rhythmdb_commit (db);
-	rb_refstring_unref (ctxt.mount_point);
+}
+
+static void
+process_unmounted_entries (RhythmDB *db, RhythmDBEntryType *entry_type, const char *mountpoint)
+{
+	RhythmDBQueryResultList *list;
+	GList *l;
+
+	list = rhythmdb_query_result_list_new ();
+	rhythmdb_do_full_query (db,
+				RHYTHMDB_QUERY_RESULTS (list),
+				RHYTHMDB_QUERY_PROP_EQUALS,
+				  RHYTHMDB_PROP_TYPE,
+				  entry_type,
+				RHYTHMDB_QUERY_PROP_EQUALS,
+				  RHYTHMDB_PROP_MOUNTPOINT,
+				  mountpoint,
+				RHYTHMDB_QUERY_END);
+	l = rhythmdb_query_result_list_get_results (list);
+	rb_debug ("%d unmounted entries to process", g_list_length (l));
+	for (; l != NULL; l = l->next) {
+		RhythmDBEntry *entry = l->data;
+		rhythmdb_entry_update_availability (entry, RHYTHMDB_ENTRY_AVAIL_UNMOUNTED);
+	}
+	g_object_unref (list);
+	rhythmdb_commit (db);
 }
 
 static void
@@ -473,23 +491,38 @@ rhythmdb_mount_removed_cb (GVolumeMonitor *monitor,
 			   GMount *mount,
 			   RhythmDB *db)
 {
-	MountCtxt ctxt;
-	char *mp;
+	char *mountpoint;
 	GFile *root;
 
 	root = g_mount_get_root (mount);
-	mp = g_file_get_uri (root);
+	mountpoint = g_file_get_uri (root);
+	rb_debug ("volume %s unmounted", mountpoint);
 	g_object_unref (root);
 
-	ctxt.mount_point = rb_refstring_new (mp);
-	g_free (mp);
+	process_unmounted_entries (db, RHYTHMDB_ENTRY_TYPE_SONG, mountpoint);
+	process_unmounted_entries (db, RHYTHMDB_ENTRY_TYPE_IMPORT_ERROR, mountpoint);
+	g_free (mountpoint);
+}
 
-	ctxt.db = db;
-	ctxt.mounted = FALSE;
-	rb_debug ("volume %s unmounted", rb_refstring_get (ctxt.mount_point));
-	rhythmdb_entry_foreach (db,
-				(GFunc)entry_volume_mounted_or_unmounted,
-				&ctxt);
-	rhythmdb_commit (db);
-	rb_refstring_unref (ctxt.mount_point);
+GList *
+rhythmdb_get_active_mounts (RhythmDB *db)
+{
+	GList *mounts;
+	GList *mountpoints = NULL;
+	GList *i;
+
+	mounts = g_volume_monitor_get_mounts (db->priv->volume_monitor);
+	for (i = mounts; i != NULL; i = i->next) {
+		GFile *root;
+		char *mountpoint;
+		GMount *mount = i->data;
+
+		root = g_mount_get_root (mount);
+		mountpoint = g_file_get_uri (root);
+		mountpoints = g_list_prepend (mountpoints, mountpoint);
+		g_object_unref (root);
+	}
+
+	rb_list_destroy_free (mounts, (GDestroyNotify) g_object_unref);
+	return mountpoints;
 }
